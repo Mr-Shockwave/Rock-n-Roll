@@ -71,6 +71,34 @@ Angle: <deg>
 <natural language movement guidance>
 ```
 
+## Searching multiple minerals
+
+`scan-start` accepts a list of minerals (OR semantics — a hit on **any** one
+ends the scan):
+
+```jsonc
+POST /fn/scan-start
+{ "target_minerals": ["quartz", "pumice", "granite"] }   // up to 5
+// legacy still works:
+{ "target_mineral": "quartz" }                            // -> ["quartz"]
+```
+
+Names are trimmed, lowercased, de-duplicated, and capped at **5**. Each frame
+scores the single main rock against **every** requested mineral; the scan stops
+the moment any one passes `CONFIDENCE_STOP_THRESHOLD`, and that mineral becomes
+the **matched mineral** (confirmation + verdict focus on it).
+
+`scan-status` and `scan-finalize` gain:
+
+| Field | Meaning |
+|---|---|
+| `target_minerals` | the requested list |
+| `matched_mineral` | the mineral that crossed the threshold (null until matched) |
+| `per_mineral_confidence` | running `{mineral: best_confidence}` map for the UI |
+
+`target_mineral` (singular) is still present (set to the matched mineral, or the
+first requested before a match) for backward compatibility.
+
 ## Images in the UI (`scan-status` fields)
 
 The worker uploads frames to **Butterbase Storage** and `scan-status` returns

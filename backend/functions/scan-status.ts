@@ -65,6 +65,9 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     JSON.stringify({
       session_id: row.id,
       target_mineral: row.target_mineral,
+      target_minerals: row.target_minerals,
+      matched_mineral: row.matched_mineral,
+      per_mineral_confidence: row.per_mineral_confidence,
       status: row.status,
       frame_count: row.frame_count,
       max_confidence: row.max_confidence,

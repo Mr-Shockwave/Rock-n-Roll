@@ -135,11 +135,12 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
   let resultMessage = "No promising rocks found.";
   let movement = "";
 
+  const matchedMineral = session.matched_mineral || session.target_mineral;
   if (needsAnalysis) {
     resultMessage = "This rock needs further analysis.";
     movement = await movementGuidance(
       ctx,
-      session.target_mineral,
+      matchedMineral,
       session.rock_description || "detected rock",
       Number(distance_cm ?? -1),
       Number(angle_deg ?? 0),
@@ -183,6 +184,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
       avg_confidence: avgConfidence,
       needs_analysis: needsAnalysis,
       result_message: resultMessage,
+      matched_mineral: matchedMineral ?? null,
+      per_mineral_confidence: session.per_mineral_confidence ?? null,
       distance_cm: distance_cm ?? null,
       angle_deg: angle_deg ?? null,
       movement_guidance: movement,

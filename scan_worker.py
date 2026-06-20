@@ -134,8 +134,15 @@ def _timeout(session_id: str) -> None:
 
 def run_session(session: dict) -> None:
     session_id = session["session_id"]
-    target = session.get("target_mineral", "?")
-    print(f"[worker] scanning for '{target}' (session {session_id})")
+    targets = session.get("target_minerals")
+    if isinstance(targets, str):
+        try:
+            targets = json.loads(targets)
+        except Exception:  # noqa: BLE001
+            targets = None
+    if not targets:
+        targets = [session.get("target_mineral", "?")]
+    print(f"[worker] scanning for {', '.join(map(str, targets))} (session {session_id})")
     print(
         f"[worker] interval={SCAN_INTERVAL_SECONDS}s timeout={SCAN_TIMEOUT_SECONDS}s "
         f"stop>{CONFIDENCE_STOP_THRESHOLD}"
