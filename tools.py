@@ -79,6 +79,26 @@ DIST_MAX_CM = 150.0       # distance above this implies a tiny/spurious bbox
 DEFAULT_VISION_MODEL = "anthropic/claude-haiku-4.5"
 DEFAULT_API_BASE = "https://api.butterbase.ai"
 
+# Scan pipeline tunables (change here or via .env)
+SCAN_INTERVAL_SECONDS = float(os.environ.get("SCAN_INTERVAL_SECONDS", "2"))
+SCAN_TIMEOUT_SECONDS = float(os.environ.get("SCAN_TIMEOUT_SECONDS", "30"))
+CONFIDENCE_STOP_THRESHOLD = float(os.environ.get("CONFIDENCE_STOP_THRESHOLD", "0.5"))
+
+
+def get_api_base() -> str:
+    """Return the app-scoped Butterbase API base URL."""
+    url = os.environ.get("BUTTERBASE_API_URL", DEFAULT_API_BASE).rstrip("/")
+    if "/v1/app_" in url:
+        return url
+    app_id = os.environ.get("BUTTERBASE_APP_ID")
+    if app_id:
+        return f"{DEFAULT_API_BASE}/v1/{app_id}"
+    return url
+
+
+def fn_url(name: str) -> str:
+    return f"{get_api_base()}/fn/{name}"
+
 
 # ---------------------------------------------------------------------------
 # Shared contour detection (robust to light AND dark rocks)
@@ -342,9 +362,9 @@ def _describe_with_butterbase(image_path: str, prompt: str) -> str:
     if not api_key:
         raise RuntimeError("BUTTERBASE_API_KEY not set")
 
-    base = os.environ.get("BUTTERBASE_API_URL", DEFAULT_API_BASE).rstrip("/")
+    base = get_api_base()
     model = os.environ.get("BUTTERBASE_VISION_MODEL", DEFAULT_VISION_MODEL)
-    url = f"{base}/v1/chat/completions"
+    url = f"{base}/chat/completions"
 
     data_uri = _encode_image_for_vision(image_path)
 
@@ -393,15 +413,21 @@ def describe_image(image_path: str, prompt: str) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def camera_tool(prompt: str) -> dict:
-    """Capture a photo and return {"image_path", "description"}."""
+def capture_frame_only() -> str:
+    """Capture a photo without running vision. Returns the saved image path."""
     os.makedirs(CAPTURE_DIR, exist_ok=True)
     index = _detect_camera_index()
     frame = _capture_frame(index)
     cv2.imwrite(CAPTURE_PATH, frame)
     print(f"[tools] saved capture to {CAPTURE_PATH}")
-    description = describe_image(CAPTURE_PATH, prompt)
-    return {"image_path": CAPTURE_PATH, "description": description}
+    return CAPTURE_PATH
+
+
+def camera_tool(prompt: str) -> dict:
+    """Capture a photo and return {"image_path", "description"}."""
+    image_path = capture_frame_only()
+    description = describe_image(image_path, prompt)
+    return {"image_path": image_path, "description": description}
 
 
 def distance_tool(image_path: str) -> dict:

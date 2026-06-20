@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rock-n-Roll Scanner</title>
+  <style>
+    :root {
+      font-family: system-ui, sans-serif;
+      color: #1a1a1a;
+      background: #f4f1ea;
+    }
+    body { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    p.sub { color: #555; margin-top: 0; }
+    label { display: block; font-weight: 600; margin: 1rem 0 0.35rem; }
+    input[type=text] {
+      width: 100%; box-sizing: border-box; padding: 0.6rem 0.75rem;
+      border: 1px solid #ccc; border-radius: 8px; font-size: 1rem;
+    }
+    button {
+      margin-top: 1rem; padding: 0.65rem 1.2rem; font-size: 1rem;
+      border: none; border-radius: 8px; background: #2d5016; color: #fff;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status {
+      margin-top: 1.5rem; padding: 1rem; background: #fff;
+      border-radius: 10px; border: 1px solid #ddd; min-height: 4rem;
+    }
+    #result { margin-top: 1rem; padding: 1rem; background: #fff8e7;
+      border-radius: 10px; border: 1px solid #e6c878; display: none; }
+    #result.visible { display: block; }
+    .metric { margin: 0.35rem 0; }
+    .hint { font-size: 0.85rem; color: #666; margin-top: 1.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Rock-n-Roll</h1>
+  <p class="sub">Mineral scan demo — iPhone camera + Butterbase backend</p>
+
+  <label for="mineral">Target mineral or rock type</label>
+  <input id="mineral" type="text" placeholder="e.g. quartz, feldspar, mica" value="quartz" />
+
+  <button id="startBtn">Start scan</button>
+
+  <div id="status">Enter a mineral and click Start scan. Make sure <code>python scan_worker.py</code> is running on the Mac.</div>
+  <div id="result"></div>
+
+  <p class="hint">Demo rocks: quartz, pumice, granite, sandstone. Try searching for minerals they contain (e.g. feldspar in granite).</p>
+
+  <script>
+    // Set in .env / deploy — override via query ?api=https://api.butterbase.ai/v1/app_xxx
+    const params = new URLSearchParams(location.search);
+    const API_BASE = params.get("api") || "https://api.butterbase.ai/v1/app_c78wpyrmhljf";
+
+    const mineralEl = document.getElementById("mineral");
+    const startBtn = document.getElementById("startBtn");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+
+    let pollTimer = null;
+
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    function showResult(data) {
+      resultEl.classList.add("visible");
+      if (data.status === "timeout") {
+        resultEl.innerHTML = `<strong>No promising rocks found.</strong><p>Scan timed out after 30 seconds.</p>`;
+        return;
+      }
+      if (data.needs_analysis) {
+        resultEl.innerHTML = `
+          <strong>${data.result_message}</strong>
+          <div class="metric">Distance: ${data.distance_cm ?? "—"} cm</div>
+          <div class="metric">Angle: ${data.angle_deg ?? "—"}°</div>
+          <div class="metric">Avg confidence: ${(data.avg_confidence ?? 0).toFixed(2)}</div>
+          <p>${data.movement_guidance || ""}</p>
+        `;
+      } else {
+        resultEl.innerHTML = `<strong>${data.result_message || "No promising rocks found."}</strong>`;
+      }
+    }
+
+    async function pollStatus(sessionId) {
+      const resp = await fetch(`${API_BASE}/fn/scan-status?session_id=${sessionId}`);
+      const data = await resp.json();
+      if (["complete", "timeout", "error"].includes(data.status)) {
+        clearInterval(pollTimer);
+        startBtn.disabled = false;
+        setStatus(`Scan finished (${data.status}).`);
+        showResult(data);
+        return;
+      }
+      setStatus(`Scanning… status=${data.status} frames=${data.frame_count ?? 0} max_conf=${(data.max_confidence ?? 0).toFixed(2)}`);
+    }
+
+    startBtn.addEventListener("click", async () => {
+      const target = mineralEl.value.trim();
+      if (!target) return alert("Enter a target mineral");
+
+      startBtn.disabled = true;
+      resultEl.classList.remove("visible");
+      resultEl.innerHTML = "";
+      setStatus("Starting scan…");
+
+      try {
+        const resp = await fetch(`${API_BASE}/fn/scan-start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_mineral: target }),
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.error || resp.statusText);
+
+        setStatus(`Session ${body.session_id} queued — waiting for camera worker…`);
+        pollTimer = setInterval(() => pollStatus(body.session_id), 1500);
+        pollStatus(body.session_id);
+      } catch (err) {
+        startBtn.disabled = false;
+        setStatus(`Error: ${err.message}`);
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "demo_rocks": {
+    "quartz": {
+      "aliases": ["silica", "silicon dioxide", "sio2", "amethyst"],
+      "associated_minerals": ["quartz"],
+      "notes": "Glassy, translucent to white; conchoidal fracture."
+    },
+    "pumice": {
+      "aliases": ["volcanic glass", "scoria-like"],
+      "associated_minerals": ["silica", "feldspar"],
+      "notes": "Light, vesicular (holey), pale gray volcanic rock."
+    },
+    "granite": {
+      "aliases": ["igneous"],
+      "associated_minerals": ["quartz", "feldspar", "mica", "biotite", "hornblende"],
+      "notes": "Coarse speckled grains: clear quartz, pink/white feldspar, dark mica."
+    },
+    "sandstone": {
+      "aliases": ["sedimentary"],
+      "associated_minerals": ["quartz", "silica", "calcite", "iron oxide"],
+      "notes": "Sandy granular texture; tan, red, or buff."
+    }
+  },
+  "suggested_external_database": {
+    "name": "Mindat.org OpenMindat API",
+    "url": "https://api.mindat.org",
+    "notes": "Best for production synonym lookup (e.g. amethyst → quartz). Requires contributor API token."
+  }
+}

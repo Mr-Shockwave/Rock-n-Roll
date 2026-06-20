@@ -1,107 +1,101 @@
-# Rock-n-Roll — vision tools (Person A)
+# Rock-n-Roll — mineral scan demo
 
-Camera capture + distance + angle estimation for the rock-picking demo.
-Person B imports `tools.py`.
+iPhone (Continuity Camera) capture + Butterbase backend orchestration for a hackathon rock-scanning demo.
 
-## Setup
+## Architecture
+
+| Component | Role |
+|---|---|
+| **Frontend** | User enters target mineral, clicks Start scan, polls Butterbase for results |
+| **Butterbase functions** (`backend/functions/`) | Session state, vision mineral classification, final guidance |
+| **Local worker** (`scan_worker.py`) | Claims sessions, captures from iPhone every N seconds, runs distance/angle |
+| **tools.py** | OpenCV camera + geometry (Person A contract) |
+
+## Quick start (demo day)
+
+### 1. Setup
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS/Linux
+pip install opencv-python numpy requests
+cp .env.example .env            # fill in BUTTERBASE_API_KEY + BUTTERBASE_APP_ID
 ```
 
-(The repo already has a `.venv` if you cloned the dev machine.)
-
-## The contract (what Person B calls)
-
-```python
-from tools import run_vision_pipeline
-result = run_vision_pipeline("identify this rock")
-print(result)
-# {"ok": true,
-#  "feedback": "Input looks good.",
-#  "issues": [],
-#  "image_path": "captures/latest.jpg",
-#  "description": "...",
-#  "distance_cm": 23.4,
-#  "angle_deg": 15.2}
-```
-
-Individual tools are also exported:
-
-```python
-from tools import camera_tool, distance_tool, angle_tool
-camera_tool(prompt)      -> {"image_path", "description"}
-distance_tool(image_path)-> {"distance_cm", "bbox"}   # or {"distance_cm": -1, "error"}
-angle_tool(image_path)   -> {"angle_deg"}             # or {"angle_deg": 0.0, "error"}
-```
-
-## Feedback loop (`ok` / `feedback` / `issues`)
-
-`run_vision_pipeline` doesn't return silent garbage when the shot is bad. It
-runs `assess_capture(image_path)` and adds:
-
-- **`ok`** — `false` when the image isn't good enough for reliable distance/angle.
-- **`feedback`** — a human/robot-readable message saying what to fix.
-- **`issues`** — machine-readable codes: `no_object`, `object_not_isolated`,
-  `blurry`, `too_dark`, `too_bright`, `implausible_distance`, `unreadable_image`.
-
-The agent/robot reads `ok` and decides whether to retake, reposition, or ask the
-user — that's the bidirectional loop. `description` (the vision model) is **not**
-gated, since it works regardless of background. The `distance_cm`/`angle_deg`
-numbers are still returned but should be ignored when `ok` is `false`.
-
-```python
-from tools import assess_capture
-assess_capture("captures/latest.jpg")
-# {"ok": false, "feedback": "Couldn't separate the rock from the background ...",
-#  "issues": ["object_not_isolated"]}
-```
-
-## Run it
+### 2. Deploy / update Butterbase functions (after editing `backend/functions/`)
 
 ```bash
-python tools.py "identify this rock"      # full pipeline, prints JSON
-python distance_tool.py test.jpg          # one tool against an image
-python angle_tool.py test.jpg
-python camera_tool.py                      # capture + describe only
+python backend/deploy_functions.py
 ```
 
-## Configuration (env vars)
+### 3. Run the camera worker (Mac with iPhone connected)
 
-| Var | Purpose | Default |
+```bash
+python scan_worker.py
+```
+
+### 4. Open the frontend
+
+**Live:** https://rock-n-roll.butterbase.dev
+
+Or open `frontend/index.html` locally. Click **Start scan** after entering a target mineral (e.g. `quartz`, `feldspar`, `mica`).
+
+## Scan workflow
+
+1. Frontend → `scan-start` creates a queued session
+2. Worker → `scan-claim` picks up the session
+3. Every **2 s** (default): capture → `scan-frame` (vision) until confidence **> 0.5** or **30 s** timeout
+4. On stop: two confirmation captures → average their confidences
+5. Worker runs **distance** + **angle** on the **last confirmation frame**
+6. `scan-finalize` returns result to frontend
+
+### Tunables (`.env`)
+
+| Variable | Default | Meaning |
 |---|---|---|
-| `CAMERA_INDEX` | Force a camera index (skip auto-detect) | auto |
-| `BUTTERBASE_API_KEY` | `bb_sk_...` key with `ai:gateway` scope — enables real rock IDs | (none) |
-| `BUTTERBASE_API_URL` | AI gateway base URL | `https://api.butterbase.ai` |
-| `BUTTERBASE_VISION_MODEL` | Vision model for descriptions | `anthropic/claude-haiku-4.5` |
+| `SCAN_INTERVAL_SECONDS` | `2` | Time between scan-phase captures |
+| `SCAN_TIMEOUT_SECONDS` | `30` | Scan timeout → "No promising rocks found" |
+| `CONFIDENCE_STOP_THRESHOLD` | `0.5` | Stop scan when frame confidence exceeds this |
+| `CONFIDENCE_ANALYSIS_MIN` | `0.5` | Show "needs further analysis" when avg ≥ this |
+| `CONFIDENCE_ANALYSIS_MAX` | `0.7` | Documented relaxed upper band |
 
-Without `BUTTERBASE_API_KEY`, descriptions fall back to a local OpenCV summary
-(color + size) so the pipeline still runs.
+Function env vars are synced when you run `backend/deploy_functions.py`.
 
-### Using a `.env` file
+## Output when a rock matches
 
-Easiest way to set the key: copy the template and fill it in. `tools.py` and
-`camera_tool.py` auto-load `.env` on import (no extra dependency), and real
-environment variables still override it.
-
-```bash
-cp .env.example .env
-# then edit .env and paste your BUTTERBASE_API_KEY=bb_sk_...
+```
+This rock needs further analysis.
+Distance: <cm>
+Angle: <deg>
+<natural language movement guidance>
 ```
 
-`.env` is gitignored, so your key is never committed.
+## Original vision tools (still available)
+
+```python
+from tools import camera_tool, distance_tool, angle_tool, run_vision_pipeline
+```
+
+```bash
+python tools.py "identify this rock"
+python list_cameras.py
+```
+
+## Demo rocks
+
+Quartz, pumice, granite, sandstone — see `mineral_hints.json` for associated searchable minerals.
+
+## Butterbase app
+
+Functions deployed to `app_c78wpyrmhljf`:
+
+- `scan-start`, `scan-claim`, `scan-frame`, `scan-finalize`, `scan-timeout`, `scan-status`
+
+API base: `https://api.butterbase.ai/v1/app_c78wpyrmhljf`
 
 ## Notes
 
-- **Camera index:** the iPhone (Continuity Camera) is usually index **0** and the
-  built-in laptop cam is **1**. Auto-detect can't reliably probe a sleeping
-  Continuity Camera, so **pin it** with `CAMERA_INDEX` (set in `.env`).
-- **Autofocus:** 10 warmup frames are discarded before saving so close-up shots
-  aren't blurry.
-- **Light vs dark rocks:** contour detection combines Otsu (both polarities) and
-  Canny edges, so quartz and obsidian both work.
-- **Distance heuristic:** `distance_cm = (8 * 800) / bbox_width_px`. To
-  recalibrate, measure a rock at a known distance and set
-  `FOCAL_LENGTH_PX = (distance_cm * bbox_width_px) / 8` in `tools.py`.
+- Pin iPhone camera with `CAMERA_INDEX=0` in `.env`
+- Worker must run on the Mac with Continuity Camera access
+- Do **not** commit `.env` (contains API key)
