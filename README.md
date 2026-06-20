@@ -1,0 +1,69 @@
+# Rock-n-Roll — vision tools (Person A)
+
+Camera capture + distance + angle estimation for the rock-picking demo.
+Person B imports `tools.py`.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install opencv-python numpy requests
+```
+
+(The repo already has a `.venv` if you cloned the dev machine.)
+
+## The contract (what Person B calls)
+
+```python
+from tools import run_vision_pipeline
+result = run_vision_pipeline("identify this rock")
+print(result)
+# {"image_path": "captures/latest.jpg",
+#  "description": "...",
+#  "distance_cm": 23.4,
+#  "angle_deg": 15.2}
+```
+
+Individual tools are also exported:
+
+```python
+from tools import camera_tool, distance_tool, angle_tool
+camera_tool(prompt)      -> {"image_path", "description"}
+distance_tool(image_path)-> {"distance_cm", "bbox"}   # or {"distance_cm": -1, "error"}
+angle_tool(image_path)   -> {"angle_deg"}             # or {"angle_deg": 0.0, "error"}
+```
+
+## Run it
+
+```bash
+python tools.py "identify this rock"      # full pipeline, prints JSON
+python distance_tool.py test.jpg          # one tool against an image
+python angle_tool.py test.jpg
+python camera_tool.py                      # capture + describe only
+```
+
+## Configuration (env vars)
+
+| Var | Purpose | Default |
+|---|---|---|
+| `CAMERA_INDEX` | Force a camera index (skip auto-detect) | auto |
+| `BUTTERBASE_API_KEY` | `bb_sk_...` key with `ai:gateway` scope — enables real rock IDs | (none) |
+| `BUTTERBASE_API_URL` | AI gateway base URL | `https://api.butterbase.ai` |
+| `BUTTERBASE_VISION_MODEL` | Vision model for descriptions | `anthropic/claude-haiku-4.5` |
+
+Without `BUTTERBASE_API_KEY`, descriptions fall back to a local OpenCV summary
+(color + size) so the pipeline still runs.
+
+## Notes
+
+- **Camera auto-detect:** scans indices 0–3 and prefers the highest working one
+  (the Mac's built-in cam is usually index 0, so the iPhone lands higher). Set
+  `CAMERA_INDEX` to pin it.
+- **Autofocus:** 10 warmup frames are discarded before saving so close-up shots
+  aren't blurry.
+- **Light vs dark rocks:** contour detection combines Otsu (both polarities) and
+  Canny edges, so quartz and obsidian both work.
+- **Distance heuristic:** `distance_cm = (8 * 800) / bbox_width_px`. To
+  recalibrate, measure a rock at a known distance and set
+  `FOCAL_LENGTH_PX = (distance_cm * bbox_width_px) / 8` in `tools.py`.
