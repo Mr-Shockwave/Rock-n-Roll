@@ -5,7 +5,9 @@ function controlBase(ctx: any): string {
 }
 
 // Mint a fresh presigned download URL for a stored object id. Presigned URLs
-// expire (~1h), so we generate a new one on every status poll.
+// expire (~1h), so we generate a new one on every status poll — the browser
+// always gets a working <img src>. Uses the function's API key (platform auth
+// can read any object), so the frontend never needs credentials.
 async function downloadUrl(ctx: any, objectId: string | null): Promise<string | null> {
   if (!objectId) return null;
   const appId = ctx.env.BUTTERBASE_APP_ID;
@@ -59,6 +61,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
 
   const row = result.rows[0];
 
+  // Mint fresh presigned image URLs (preview updates live; overlay/final on complete).
   const [previewUrl, overlayUrl, finalFrameUrl] = await Promise.all([
     downloadUrl(ctx, row.latest_preview_object_id),
     downloadUrl(ctx, row.overlay_object_id),

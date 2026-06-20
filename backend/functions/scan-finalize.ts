@@ -275,6 +275,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
          ui_phase = 'mistake',
          confirm_confidence_1 = COALESCE($6, confirm_confidence_1),
          confirm_confidence_2 = COALESCE($7, confirm_confidence_2),
+         overlay_object_id = COALESCE($8, overlay_object_id),
+         final_frame_object_id = COALESCE($9, final_frame_object_id),
          updated_at = now()
      WHERE id = $1`,
     [
@@ -285,6 +287,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
       agentText,
       confirm_confidence_1 ?? null,
       confirm_confidence_2 ?? null,
+      overlay_object_id ?? null,
+      final_frame_object_id ?? null,
     ],
   );
 
