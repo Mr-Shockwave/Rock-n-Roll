@@ -19,7 +19,10 @@ pip install opencv-python numpy requests
 from tools import run_vision_pipeline
 result = run_vision_pipeline("identify this rock")
 print(result)
-# {"image_path": "captures/latest.jpg",
+# {"ok": true,
+#  "feedback": "Input looks good.",
+#  "issues": [],
+#  "image_path": "captures/latest.jpg",
 #  "description": "...",
 #  "distance_cm": 23.4,
 #  "angle_deg": 15.2}
@@ -32,6 +35,28 @@ from tools import camera_tool, distance_tool, angle_tool
 camera_tool(prompt)      -> {"image_path", "description"}
 distance_tool(image_path)-> {"distance_cm", "bbox"}   # or {"distance_cm": -1, "error"}
 angle_tool(image_path)   -> {"angle_deg"}             # or {"angle_deg": 0.0, "error"}
+```
+
+## Feedback loop (`ok` / `feedback` / `issues`)
+
+`run_vision_pipeline` doesn't return silent garbage when the shot is bad. It
+runs `assess_capture(image_path)` and adds:
+
+- **`ok`** — `false` when the image isn't good enough for reliable distance/angle.
+- **`feedback`** — a human/robot-readable message saying what to fix.
+- **`issues`** — machine-readable codes: `no_object`, `object_not_isolated`,
+  `blurry`, `too_dark`, `too_bright`, `implausible_distance`, `unreadable_image`.
+
+The agent/robot reads `ok` and decides whether to retake, reposition, or ask the
+user — that's the bidirectional loop. `description` (the vision model) is **not**
+gated, since it works regardless of background. The `distance_cm`/`angle_deg`
+numbers are still returned but should be ignored when `ok` is `false`.
+
+```python
+from tools import assess_capture
+assess_capture("captures/latest.jpg")
+# {"ok": false, "feedback": "Couldn't separate the rock from the background ...",
+#  "issues": ["object_not_isolated"]}
 ```
 
 ## Run it

@@ -40,13 +40,22 @@ def overlay(image_path: str) -> str:
         cv2.putText(img, "NO OBJECT DETECTED", (40, 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
 
+    quality = tools.assess_capture(image_path)
+    verdict = "OK" if quality["ok"] else "RETAKE"
+    color = (0, 180, 0) if quality["ok"] else (0, 0, 255)
+    cv2.putText(img, verdict, (20, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 2, color, 4)
+
     label = f"distance_cm={dist.get('distance_cm')}  angle_deg={ang.get('angle_deg')}"
-    cv2.putText(img, label, (20, img.shape[0] - 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+    cv2.putText(img, label, (20, img.shape[0] - 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+    cv2.putText(img, quality["feedback"][:70], (20, img.shape[0] - 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
     cv2.imwrite(OUT_PATH, img)
     print(f"distance: {dist}")
     print(f"angle:    {ang}")
+    print(f"quality:  {quality}")
     print(f"overlay saved -> {OUT_PATH}")
     return OUT_PATH
 

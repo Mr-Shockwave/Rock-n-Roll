@@ -179,6 +179,24 @@ def _describe_locally(image_path: str) -> str:
     return "A rock on a plain background (no distinct object outline detected)."
 
 
+def _encode_image_for_vision(image_path: str, max_side: int = 1024,
+                             quality: int = 85) -> str:
+    """Downscale + re-encode to a base64 JPEG data URI so the request stays
+    under the gateway's payload limit. 1024px is plenty to identify a rock."""
+    img = cv2.imread(image_path)
+    if img is None:
+        raise RuntimeError(f"could not read image: {image_path}")
+    h, w = img.shape[:2]
+    scale = min(1.0, float(max_side) / max(h, w))
+    if scale < 1.0:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                         interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise RuntimeError("failed to encode image for vision request")
+    return "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii")
+
+
 def _describe_with_butterbase(image_path: str, prompt: str) -> str:
     """Identify the rock via the Butterbase AI gateway. Raises on any failure."""
     api_key = os.environ.get("BUTTERBASE_API_KEY")
@@ -189,8 +207,7 @@ def _describe_with_butterbase(image_path: str, prompt: str) -> str:
     model = os.environ.get("BUTTERBASE_VISION_MODEL", DEFAULT_VISION_MODEL)
     url = f"{base}/v1/chat/completions"
 
-    with open(image_path, "rb") as f:
-        data_uri = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
+    data_uri = _encode_image_for_vision(image_path)
 
     payload = {
         "model": model,

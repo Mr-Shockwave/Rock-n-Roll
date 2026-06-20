@@ -67,6 +67,15 @@ MAX_SCAN_INDEX = 4
 KNOWN_WIDTH_CM = 8.0
 FOCAL_LENGTH_PX = 800.0
 
+# Quality gates for assess_capture() — when these fail, the pipeline reports
+# `ok: False` with actionable feedback instead of returning unreliable numbers.
+BLUR_VAR_MIN = 50.0       # Laplacian variance of the rock ROI below this = blurry
+BRIGHTNESS_MIN = 40.0     # mean ROI brightness (0-255) below this = too dark
+BRIGHTNESS_MAX = 215.0    # above this = overexposed
+BBOX_FRAME_FRAC_MAX = 0.85  # bbox covering more than this of the frame = not isolated
+DIST_MIN_CM = 5.0         # distance below this implies a near-full-frame (bad) bbox
+DIST_MAX_CM = 150.0       # distance above this implies a tiny/spurious bbox
+
 DEFAULT_VISION_MODEL = "anthropic/claude-haiku-4.5"
 DEFAULT_API_BASE = "https://api.butterbase.ai"
 
@@ -74,12 +83,14 @@ DEFAULT_API_BASE = "https://api.butterbase.ai"
 # ---------------------------------------------------------------------------
 # Shared contour detection (robust to light AND dark rocks)
 # ---------------------------------------------------------------------------
-def find_largest_contour(img: np.ndarray):
-    """Return the largest object-like contour, or None.
+def _detect_object(img: np.ndarray):
+    """Find the rock contour and report confidence.
 
-    Combines Otsu thresholding (both polarities) with a Canny-edge fallback and
-    discards contours that fill almost the whole frame (the background), so it
-    works on quartz (light) and obsidian (dark) alike.
+    Returns (contour_or_None, isolated). `isolated` is True only when a contour
+    that does NOT touch the frame border was found — that's the high-confidence
+    case. If detection had to fall back to a border-touching contour (e.g. a
+    busy background where the strongest edge is the table/floor boundary),
+    `isolated` is False, which the quality check treats as unreliable.
     """
     h, w = img.shape[:2]
     frame_area = float(h * w)
@@ -96,9 +107,6 @@ def find_largest_contour(img: np.ndarray):
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     masks.append(edges)
 
-    # The target object sits fully inside the frame, while background boundaries
-    # (table edge, cloth seam, floor line) tend to touch the borders. Prefer the
-    # largest contour that does NOT touch the border; fall back to any if none do.
     margin = 5
     best_inside = None
     best_inside_area = 0.0
@@ -121,7 +129,82 @@ def find_largest_contour(img: np.ndarray):
             if not touches_border and area > best_inside_area:
                 best_inside_area = area
                 best_inside = c
-    return best_inside if best_inside is not None else best_any
+    if best_inside is not None:
+        return best_inside, True
+    return best_any, False
+
+
+def find_largest_contour(img: np.ndarray):
+    """Return the largest object-like contour, or None (confidence ignored)."""
+    contour, _ = _detect_object(img)
+    return contour
+
+
+def assess_capture(image_path: str) -> dict:
+    """Judge whether an image is good enough for reliable distance/angle.
+
+    Returns {"ok": bool, "feedback": str, "issues": [str, ...]}. This is the
+    feedback signal a robot/agent reads to decide whether to retake, reposition,
+    or ask the user. `description` (vision) works regardless and is not gated.
+    """
+    img = cv2.imread(image_path)
+    if img is None:
+        return {
+            "ok": False,
+            "feedback": "Could not read the captured image; retake.",
+            "issues": ["unreadable_image"],
+        }
+
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    issues = []
+    msgs = []
+
+    contour, isolated = _detect_object(img)
+
+    # Blur — measured on the rock ROI when we have one, else the whole frame, so
+    # a plain (uniform) background doesn't get mistaken for "blurry".
+    if contour is not None:
+        x, y, bw, bh = cv2.boundingRect(contour)
+        roi = gray[y:y + bh, x:x + bw]
+    else:
+        x = y = 0
+        bw, bh = w, h
+        roi = gray
+    blur_var = float(cv2.Laplacian(roi, cv2.CV_64F).var()) if roi.size else 0.0
+    if blur_var < BLUR_VAR_MIN:
+        issues.append("blurry")
+        msgs.append("Image looks blurry — hold the camera steady, let it focus, and retake.")
+
+    # Exposure
+    brightness = float(gray.mean())
+    if brightness < BRIGHTNESS_MIN:
+        issues.append("too_dark")
+        msgs.append("Image is too dark — add light and retake.")
+    elif brightness > BRIGHTNESS_MAX:
+        issues.append("too_bright")
+        msgs.append("Image is overexposed — reduce glare/light and retake.")
+
+    # Object detection + isolation
+    if contour is None:
+        issues.append("no_object")
+        msgs.append("No rock detected — place a rock in view on a plain surface.")
+    else:
+        frac = (bw * bh) / float(w * h)
+        if not isolated or frac > BBOX_FRAME_FRAC_MAX:
+            issues.append("object_not_isolated")
+            msgs.append("Couldn't separate the rock from the background — put it on a "
+                        "plain surface filling the frame and retake.")
+        else:
+            dist = (KNOWN_WIDTH_CM * FOCAL_LENGTH_PX) / float(bw) if bw else -1.0
+            if dist < DIST_MIN_CM or dist > DIST_MAX_CM:
+                issues.append("implausible_distance")
+                msgs.append(f"Distance estimate looks off ({dist:.0f} cm) — reframe so "
+                            "the rock is fully in view and retake.")
+
+    ok = not issues
+    feedback = "Input looks good." if ok else " ".join(msgs)
+    return {"ok": ok, "feedback": feedback, "issues": issues}
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +315,28 @@ def _describe_locally(image_path: str) -> str:
     return f"A {size} {_color_name(mean_bgr)} rock (~{bw}x{bh}px in frame)."
 
 
+def _encode_image_for_vision(image_path: str, max_side: int = 1024,
+                             quality: int = 85) -> str:
+    """Downscale + re-encode to a base64 JPEG data URI.
+
+    Full-res phone photos (esp. on textured backgrounds) can exceed the gateway's
+    payload limit, so shrink the longest side to `max_side` px. That's plenty for
+    a vision model to identify a rock.
+    """
+    img = cv2.imread(image_path)
+    if img is None:
+        raise RuntimeError(f"could not read image: {image_path}")
+    h, w = img.shape[:2]
+    scale = min(1.0, float(max_side) / max(h, w))
+    if scale < 1.0:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                         interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise RuntimeError("failed to encode image for vision request")
+    return "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii")
+
+
 def _describe_with_butterbase(image_path: str, prompt: str) -> str:
     api_key = os.environ.get("BUTTERBASE_API_KEY")
     if not api_key:
@@ -241,8 +346,7 @@ def _describe_with_butterbase(image_path: str, prompt: str) -> str:
     model = os.environ.get("BUTTERBASE_VISION_MODEL", DEFAULT_VISION_MODEL)
     url = f"{base}/v1/chat/completions"
 
-    with open(image_path, "rb") as f:
-        data_uri = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
+    data_uri = _encode_image_for_vision(image_path)
 
     payload = {
         "model": model,
@@ -328,17 +432,31 @@ def angle_tool(image_path: str) -> dict:
 
 
 def run_vision_pipeline(prompt: str) -> dict:
-    """Capture -> describe -> distance -> angle, merged into one dict."""
+    """Capture -> describe -> distance -> angle, merged into one dict.
+
+    Adds `ok`/`feedback`/`issues`: when the capture isn't good enough for
+    reliable distance/angle, `ok` is False and `feedback` says what to fix.
+    The numbers are still returned (so the agent can inspect them) but should
+    be treated as unreliable when `ok` is False. This is the report side of the
+    feedback loop — the agent/robot decides whether to retake or reposition.
+    """
     cam = camera_tool(prompt)
     image_path = cam["image_path"]
     dist = distance_tool(image_path)
     ang = angle_tool(image_path)
-    return {
+    quality = assess_capture(image_path)
+    result = {
+        "ok": quality["ok"],
+        "feedback": quality["feedback"],
+        "issues": quality["issues"],
         "image_path": image_path,
         "description": cam.get("description"),
         "distance_cm": dist.get("distance_cm"),
         "angle_deg": ang.get("angle_deg"),
     }
+    if not quality["ok"]:
+        print(f"[tools] LOW CONFIDENCE: {quality['feedback']}")
+    return result
 
 
 if __name__ == "__main__":
