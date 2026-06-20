@@ -124,7 +124,12 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
 
-  let body: { session_id?: string; phase?: string; image_base64?: string };
+  let body: {
+    session_id?: string;
+    phase?: string;
+    image_base64?: string;
+    preview_object_id?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -134,7 +139,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
 
-  const { session_id, phase = "scan", image_base64 } = body;
+  const { session_id, phase = "scan", image_base64, preview_object_id } = body;
   if (!session_id || !image_base64) {
     return new Response(JSON.stringify({ error: "session_id and image_base64 required" }), {
       status: 400,
@@ -164,9 +169,10 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
              max_confidence = $2,
              rock_description = COALESCE($3, rock_description),
              status = CASE WHEN $4 = 'stop' THEN 'confirming' ELSE status END,
+             latest_preview_object_id = COALESCE($5, latest_preview_object_id),
              updated_at = now()
          WHERE id = $1`,
-        [session_id, newMax, analysis.rock_description, action],
+        [session_id, newMax, analysis.rock_description, action, preview_object_id ?? null],
       );
 
       return new Response(
@@ -189,9 +195,10 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
          SET ${col} = $2,
              rock_description = COALESCE($3, rock_description),
              status = 'confirming',
+             latest_preview_object_id = COALESCE($4, latest_preview_object_id),
              updated_at = now()
          WHERE id = $1`,
-        [session_id, analysis.best_confidence, analysis.rock_description],
+        [session_id, analysis.best_confidence, analysis.rock_description, preview_object_id ?? null],
       );
 
       return new Response(

@@ -71,6 +71,25 @@ Angle: <deg>
 <natural language movement guidance>
 ```
 
+## Images in the UI (`scan-status` fields)
+
+The worker uploads frames to **Butterbase Storage** and `scan-status` returns
+freshly-minted presigned image URLs (regenerated each poll, so they never
+expire on the client). Person B's frontend just sets `<img src>`:
+
+| Field | When | What |
+|---|---|---|
+| `preview_image_url` | during scan (updates each frame) | latest live camera frame |
+| `overlay_image_url` | on `complete` | annotated frame — bbox, min-area rect, distance/angle, OK/RETAKE |
+| `final_frame_image_url` | on `complete` | the raw confirmation frame |
+
+Any of these is `null` when no image is available yet. The durable references
+are stored as `*_object_id` columns; URLs are minted on demand via the API key
+inside `scan-status`, so the browser never needs credentials.
+
+Storage plumbing lives in [storage.py](storage.py) (`upload_image`,
+`download_url`); the worker calls it in `scan_worker.py`.
+
 ## Original vision tools (still available)
 
 ```python

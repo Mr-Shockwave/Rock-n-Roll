@@ -86,6 +86,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     angle_deg?: number;
     confirm_confidence_1?: number;
     confirm_confidence_2?: number;
+    overlay_object_id?: string;
+    final_frame_object_id?: string;
   };
   try {
     body = await req.json();
@@ -96,7 +98,15 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
 
-  const { session_id, distance_cm, angle_deg, confirm_confidence_1, confirm_confidence_2 } = body;
+  const {
+    session_id,
+    distance_cm,
+    angle_deg,
+    confirm_confidence_1,
+    confirm_confidence_2,
+    overlay_object_id,
+    final_frame_object_id,
+  } = body;
   if (!session_id) {
     return new Response(JSON.stringify({ error: "session_id required" }), {
       status: 400,
@@ -147,6 +157,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
          movement_guidance = $7,
          confirm_confidence_1 = COALESCE($8, confirm_confidence_1),
          confirm_confidence_2 = COALESCE($9, confirm_confidence_2),
+         overlay_object_id = COALESCE($10, overlay_object_id),
+         final_frame_object_id = COALESCE($11, final_frame_object_id),
          updated_at = now()
      WHERE id = $1`,
     [
@@ -159,6 +171,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
       movement || null,
       confirm_confidence_1 ?? null,
       confirm_confidence_2 ?? null,
+      overlay_object_id ?? null,
+      final_frame_object_id ?? null,
     ],
   );
 
