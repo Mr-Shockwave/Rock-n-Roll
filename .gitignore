@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 test.jpg
 .env
+frontend.zip
+frontend-deploy.zip
