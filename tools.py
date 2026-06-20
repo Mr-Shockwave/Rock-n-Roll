@@ -69,18 +69,32 @@ def find_largest_contour(img: np.ndarray):
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     masks.append(edges)
 
-    best = None
-    best_area = 0.0
+    # The target object sits fully inside the frame, while background boundaries
+    # (table edge, cloth seam, floor line) tend to touch the borders. Prefer the
+    # largest contour that does NOT touch the border; fall back to any if none do.
+    margin = 5
+    best_inside = None
+    best_inside_area = 0.0
+    best_any = None
+    best_any_area = 0.0
     for mask in masks:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for c in contours:
             area = cv2.contourArea(c)
             if area < 0.01 * frame_area or area > 0.95 * frame_area:
                 continue
-            if area > best_area:
-                best_area = area
-                best = c
-    return best
+            if area > best_any_area:
+                best_any_area = area
+                best_any = c
+            x, y, bw, bh = cv2.boundingRect(c)
+            touches_border = (
+                x <= margin or y <= margin
+                or (x + bw) >= (w - margin) or (y + bh) >= (h - margin)
+            )
+            if not touches_border and area > best_inside_area:
+                best_inside_area = area
+                best_inside = c
+    return best_inside if best_inside is not None else best_any
 
 
 # ---------------------------------------------------------------------------
@@ -124,18 +138,33 @@ def _detect_camera_index() -> int:
     return chosen
 
 
-def _capture_frame(index: int) -> np.ndarray:
+def _capture_frame(index: int, wake_timeout: float = 10.0) -> np.ndarray:
     cap = _open_capture(index)
     if cap is None:
         raise RuntimeError(f"Could not open camera index {index}.")
     try:
-        for _ in range(WARMUP_FRAMES):  # let autofocus/exposure settle
+        # Wait for the first valid frame. An iPhone Continuity Camera can take a
+        # few seconds to wake, returning empty reads until it starts streaming.
+        deadline = time.time() + wake_timeout
+        first = None
+        while time.time() < deadline:
+            ok, f = cap.read()
+            if ok and f is not None:
+                first = f
+                break
+            time.sleep(0.2)
+        if first is None:
+            raise RuntimeError(
+                f"Camera index {index} opened but returned no frame within "
+                f"{wake_timeout:.0f}s. If this is an iPhone, make sure it is locked, "
+                "propped up still, and rear camera facing the scene."
+            )
+        # Discard warmup frames so autofocus/exposure settle, then grab the shot.
+        for _ in range(WARMUP_FRAMES):
             cap.read()
             time.sleep(0.05)
         ok, frame = cap.read()
-        if not ok or frame is None:
-            raise RuntimeError(f"Camera index {index} opened but returned no frame.")
-        return frame
+        return frame if ok and frame is not None else first
     finally:
         cap.release()
 

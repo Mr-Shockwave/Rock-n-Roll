@@ -82,19 +82,36 @@ def _detect_camera_index() -> int:
     return chosen
 
 
-def _capture_frame(index: int) -> np.ndarray:
-    """Grab one frame from `index`, discarding warmup frames first."""
+def _capture_frame(index: int, wake_timeout: float = 10.0) -> np.ndarray:
+    """Grab one frame from `index`, waiting for the camera to wake first.
+
+    An iPhone Continuity Camera can take a few seconds to start streaming,
+    returning empty reads until then, so we poll for the first valid frame
+    before discarding warmup frames.
+    """
     cap = _open_capture(index)
     if cap is None:
         raise RuntimeError(f"Could not open camera index {index}.")
     try:
-        for _ in range(WARMUP_FRAMES):
+        deadline = time.time() + wake_timeout
+        first = None
+        while time.time() < deadline:
+            ok, f = cap.read()
+            if ok and f is not None:
+                first = f
+                break
+            time.sleep(0.2)
+        if first is None:
+            raise RuntimeError(
+                f"Camera index {index} opened but returned no frame within "
+                f"{wake_timeout:.0f}s. If this is an iPhone, make sure it is locked, "
+                "propped up still, and rear camera facing the scene."
+            )
+        for _ in range(WARMUP_FRAMES):  # let autofocus/exposure settle
             cap.read()
             time.sleep(0.05)
         ok, frame = cap.read()
-        if not ok or frame is None:
-            raise RuntimeError(f"Camera index {index} opened but returned no frame.")
-        return frame
+        return frame if ok and frame is not None else first
     finally:
         cap.release()
 

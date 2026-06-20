@@ -37,8 +37,14 @@ def find_largest_contour(img: np.ndarray):
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     masks.append(edges)
 
-    best = None
-    best_area = 0.0
+    # The target object sits fully inside the frame, while background boundaries
+    # (table edge, cloth seam, floor line) tend to touch the borders. Prefer the
+    # largest contour that does NOT touch the border; fall back to any if none do.
+    margin = 5
+    best_inside = None
+    best_inside_area = 0.0
+    best_any = None
+    best_any_area = 0.0
     for mask in masks:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for c in contours:
@@ -46,10 +52,18 @@ def find_largest_contour(img: np.ndarray):
             # ignore specks and the full-frame background blob
             if area < 0.01 * frame_area or area > 0.95 * frame_area:
                 continue
-            if area > best_area:
-                best_area = area
-                best = c
-    return best
+            if area > best_any_area:
+                best_any_area = area
+                best_any = c
+            x, y, bw, bh = cv2.boundingRect(c)
+            touches_border = (
+                x <= margin or y <= margin
+                or (x + bw) >= (w - margin) or (y + bh) >= (h - margin)
+            )
+            if not touches_border and area > best_inside_area:
+                best_inside_area = area
+                best_inside = c
+    return best_inside if best_inside is not None else best_any
 
 
 def distance_tool(image_path: str) -> dict:
