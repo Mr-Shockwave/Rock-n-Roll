@@ -1,0 +1,9 @@
+# Direct dependencies for the Rock-n-Roll vision tools.
+# Install:  python3 -m venv .venv && source .venv/bin/activate
+#           pip install -r requirements.txt
+# (transitive deps for requests — certifi, urllib3, idna, charset-normalizer —
+#  are resolved automatically by pip.)
+
+opencv-python==4.13.0.92
+numpy==2.4.6
+requests==2.34.2

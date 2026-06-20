@@ -8,7 +8,7 @@ Person B imports `tools.py`.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install opencv-python numpy requests
+pip install -r requirements.txt
 ```
 
 (The repo already has a `.venv` if you cloned the dev machine.)
