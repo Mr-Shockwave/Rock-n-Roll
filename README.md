@@ -35,11 +35,15 @@ python backend/deploy_functions.py
 python scan_worker.py
 ```
 
-### 4. Open the frontend
+### 4. Deploy / update frontend (after editing `frontend/`)
 
-**Live:** https://rock-n-roll.butterbase.dev
+```bash
+python backend/deploy_frontend.py
+```
 
-Or open `frontend/index.html` locally. Click **Start scan** after entering a target mineral (e.g. `quartz`, `feldspar`, `mica`).
+Live URL: https://rock-n-roll.butterbase.dev
+
+Or open `frontend/index.html` locally.
 
 ## Scan workflow
 
