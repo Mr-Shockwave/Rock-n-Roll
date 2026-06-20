@@ -21,15 +21,50 @@ function visionModel(ctx: any): string {
   return ctx.env.BUTTERBASE_VISION_MODEL || "anthropic/claude-haiku-4.5";
 }
 
+function parseMinerals(session: any): string[] {
+  let list = session.target_minerals;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      list = null;
+    }
+  }
+  if (Array.isArray(list) && list.length) {
+    return list.map((m: any) => String(m).toLowerCase()).filter((m: string) => m.length);
+  }
+  return session.target_mineral ? [String(session.target_mineral).toLowerCase()] : [];
+}
+
+function mergeConfidence(
+  existing: any,
+  fresh: Record<string, number>,
+): Record<string, number> {
+  let cur = existing;
+  if (typeof cur === "string") {
+    try {
+      cur = JSON.parse(cur);
+    } catch {
+      cur = {};
+    }
+  }
+  if (!cur || typeof cur !== "object") cur = {};
+  const out: Record<string, number> = { ...cur };
+  for (const [k, v] of Object.entries(fresh)) {
+    out[k] = Math.max(Number(out[k]) || 0, v);
+  }
+  return out;
+}
+
 type RankedRock = { index: number; description: string; confidence: number };
 
-function rankRocks(rocks: Array<{ description: string; confidence: number }>): RankedRock[] {
-  return [...rocks]
-    .sort((a, b) => b.confidence - a.confidence)
-    .map((r, i) => ({
+function rankMinerals(perMineral: Record<string, number>): RankedRock[] {
+  return Object.entries(perMineral)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, confidence], i) => ({
       index: i + 1,
-      description: r.description,
-      confidence: r.confidence,
+      description: name,
+      confidence,
     }));
 }
 
@@ -38,69 +73,66 @@ function fmtPct(c: number): string {
 }
 
 function panelScan(ranked: RankedRock[]): string {
-  if (!ranked.length) return "No rocks detected.";
+  if (!ranked.length) return "No minerals scored.";
   return [
-    `${ranked.length} rock(s) detected`,
-    ...ranked.map((r) => `Rock ${r.index}: ${fmtPct(r.confidence)}`),
+    `${ranked.length} mineral(s) scored`,
+    ...ranked.map((r) => `${r.description}: ${fmtPct(r.confidence)}`),
   ].join("\n");
 }
 
 function panelConfirm1(ranked: RankedRock[], minC: number): string {
   const qual = ranked.filter((r) => r.confidence >= minC);
-  if (!qual.length) return `0 rock(s) over threshold (${fmtPct(minC)})`;
+  if (!qual.length) return `0 mineral(s) over threshold (${fmtPct(minC)})`;
   return [
-    `${qual.length} rock(s) over threshold`,
-    ...qual.map((r) => `Rock ${r.index}: ${fmtPct(r.confidence)}`),
+    `${qual.length} mineral(s) over threshold`,
+    ...qual.map((r) => `${r.description}: ${fmtPct(r.confidence)}`),
   ].join("\n");
 }
 
-function panelConfirm2(focusIndex: number, confidence: number): string {
-  return `Rock ${focusIndex}: ${fmtPct(confidence)}`;
+function panelConfirm2(focusIndex: number, confidence: number, mineral: string): string {
+  return `Rock ${focusIndex} (${mineral}): ${fmtPct(confidence)}`;
 }
 
-function focusRockFromSession(session: any): {
+function focusFromSession(session: any): {
   index: number;
   description: string | null;
+  mineral: string | null;
 } {
   const index = Number(session.focus_rock_index) || 1;
-  try {
-    const ranked: RankedRock[] = JSON.parse(session.ranked_rocks_json || "[]");
-    const hit = ranked.find((r) => r.index === index);
-    if (hit?.description) return { index, description: hit.description };
-  } catch {
-    /* ignore */
-  }
-  return { index, description: session.rock_description || null };
+  const mineral = session.matched_mineral || session.target_mineral || null;
+  return { index, description: mineral ? String(mineral) : null, mineral };
 }
 
 async function analyzeFrame(
   ctx: any,
-  targetMineral: string,
+  minerals: string[],
   imageBase64: string,
 ): Promise<{
+  per_mineral: Record<string, number>;
   best_confidence: number;
+  matched_mineral: string | null;
   rock_description: string;
-  rocks: Array<{ description: string; confidence: number }>;
 }> {
   const { BUTTERBASE_APP_ID, BUTTERBASE_API_URL, BUTTERBASE_API_KEY } = ctx.env;
   const hints = Object.entries(DEMO_ROCK_HINTS)
     .map(([k, v]) => `- ${k}: ${v}`)
     .join("\n");
+  const mineralList = minerals.join(", ");
 
   const systemPrompt = `You are a geologist assistant for a rock-scanning demo.
-The user is searching for a target mineral/rock type: "${targetMineral}".
-Rate how likely visible rocks in the image contain or are associated with that target.
-Demo rocks in the scene may include:
+The user is searching for these target minerals/rock types: ${mineralList}.
+Look at the SINGLE main (largest, most central) rock in the image and rate, for EACH
+target mineral, how likely that rock contains or is plausibly associated with it.
+Demo rocks may include:
 ${hints}
 
 Reply with JSON only (no markdown):
 {
-  "rocks": [{"description": "brief rock description", "confidence": 0.0-1.0}],
-  "best_confidence": 0.0-1.0,
-  "best_rock_description": "description of highest-confidence rock"
+  "per_mineral": { ${minerals.map((m) => `"${m}": 0.0-1.0`).join(", ")} },
+  "best_rock_description": "brief description of the main rock"
 }
-Use confidence as probability the target mineral is present or plausibly associated with the rock.
-If no rocks visible, return best_confidence 0.0.`;
+Each confidence is the probability that target mineral is present/associated with the main rock.
+If no rock is visible, set every confidence to 0.0.`;
 
   const dataUri = imageBase64.startsWith("data:")
     ? imageBase64
@@ -125,7 +157,7 @@ If no rocks visible, return best_confidence 0.0.`;
             content: [
               {
                 type: "text",
-                text: `Analyze this image for target mineral/rock: ${targetMineral}`,
+                text: `Score the main rock for these minerals: ${mineralList}`,
               },
               { type: "image_url", image_url: { url: dataUri, detail: "low" } },
             ],
@@ -145,23 +177,29 @@ If no rocks visible, return best_confidence 0.0.`;
   const jsonMatch = content.match(/\{[\s\S]*\}/);
   const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
 
-  const rocks = Array.isArray(parsed.rocks) ? parsed.rocks : [];
-  let best = typeof parsed.best_confidence === "number" ? parsed.best_confidence : 0;
-  if (!best && rocks.length) {
-    best = Math.max(...rocks.map((r: any) => Number(r.confidence) || 0));
+  const perRaw =
+    parsed.per_mineral && typeof parsed.per_mineral === "object" ? parsed.per_mineral : {};
+  const per_mineral: Record<string, number> = {};
+  for (const m of minerals) {
+    const v = Number(perRaw[m]);
+    per_mineral[m] = Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
   }
-  const desc =
-    parsed.best_rock_description ||
-    rocks.sort((a: any, b: any) => (b.confidence || 0) - (a.confidence || 0))[0]?.description ||
-    "Unknown rock";
+
+  let matched_mineral: string | null = null;
+  let best_confidence = -1;
+  for (const m of minerals) {
+    if (per_mineral[m] > best_confidence) {
+      best_confidence = per_mineral[m];
+      matched_mineral = m;
+    }
+  }
+  best_confidence = Math.max(0, best_confidence);
 
   return {
-    best_confidence: Math.max(0, Math.min(1, best)),
-    rock_description: desc,
-    rocks: rocks.map((r: any) => ({
-      description: String(r.description || ""),
-      confidence: Math.max(0, Math.min(1, Number(r.confidence) || 0)),
-    })),
+    per_mineral,
+    best_confidence,
+    matched_mineral,
+    rock_description: String(parsed.best_rock_description || "Unknown rock"),
   };
 }
 
@@ -303,9 +341,10 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
 
   try {
     if (phase === "confirm2") {
-      const focus = focusRockFromSession(session);
+      const focus = focusFromSession(session);
+      const matchedMineral = focus.mineral || parseMinerals(session)[0] || "unknown";
       const focusDescription =
-        (focus_rock_description || focus.description || "").trim();
+        (focus_rock_description || session.rock_description || focus.description || "").trim();
       if (!focusDescription) {
         return new Response(
           JSON.stringify({ error: "focus_rock_description required for confirm2" }),
@@ -315,12 +354,12 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
 
       const focused = await analyzeFocusedRock(
         ctx,
-        session.target_mineral,
+        matchedMineral,
         image_base64,
         focusDescription,
       );
 
-      const agentText = panelConfirm2(focus.index, focused.best_confidence);
+      const agentText = panelConfirm2(focus.index, focused.best_confidence, matchedMineral);
 
       await ctx.db.query(
         `UPDATE scan_sessions
@@ -349,23 +388,33 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
           rock_description: focused.rock_description,
           focus_rock_description: focusDescription,
           focus_rock_index: focus.index,
+          matched_mineral: matchedMineral,
           agent_panel_text: agentText,
         }),
         { status: 200, headers: { "Content-Type": "application/json", ...cors } },
       );
     }
 
-    const analysis = await analyzeFrame(ctx, session.target_mineral, image_base64);
+    const isConfirm = phase === "confirm1";
+    const allMinerals = parseMinerals(session);
+    const scoreMinerals =
+      isConfirm && session.matched_mineral
+        ? [String(session.matched_mineral).toLowerCase()]
+        : allMinerals;
+
+    const analysis = await analyzeFrame(ctx, scoreMinerals, image_base64);
     const threshold = stopThreshold(ctx);
     const action = analysis.best_confidence > threshold ? "stop" : "continue";
-    const ranked = rankRocks(analysis.rocks);
+    const mergedConf = mergeConfidence(session.per_mineral_confidence, analysis.per_mineral);
+    const ranked = rankMinerals(isConfirm ? analysis.per_mineral : mergedConf);
 
     if (phase === "scan") {
       const newMax = Math.max(session.max_confidence || 0, analysis.best_confidence);
       const isStop = action === "stop";
-      const agentText = isStop ? "Stop" : panelScan(ranked);
-      const focusIndex = isStop && ranked.length ? ranked[0].index : session.focus_rock_index;
-      const rankedJson = isStop ? JSON.stringify(ranked) : session.ranked_rocks_json;
+      const scanRanked = rankMinerals(analysis.per_mineral);
+      const agentText = isStop ? "Stop" : panelScan(scanRanked);
+      const focusIndex = 1;
+      const rankedJson = isStop ? JSON.stringify(scanRanked) : session.ranked_rocks_json;
 
       await ctx.db.query(
         `UPDATE scan_sessions
@@ -378,29 +427,35 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
              focus_rock_index = COALESCE($7, focus_rock_index),
              ranked_rocks_json = COALESCE($8, ranked_rocks_json),
              latest_preview_object_id = COALESCE($9, latest_preview_object_id),
+             per_mineral_confidence = $10,
+             matched_mineral = CASE WHEN $4 = 'stop' THEN $11 ELSE matched_mineral END,
              updated_at = now()
          WHERE id = $1`,
         [
           session_id,
           newMax,
-          isStop && ranked.length ? ranked[0].description : analysis.rock_description,
+          analysis.rock_description,
           action,
           isStop ? "stop" : "scan",
           agentText,
           focusIndex,
           rankedJson,
           previewId,
+          JSON.stringify(mergedConf),
+          analysis.matched_mineral,
         ],
       );
 
       return new Response(
         JSON.stringify({
-          action,
+          action: isStop ? "stop" : "continue",
           best_confidence: analysis.best_confidence,
           max_confidence: newMax,
+          matched_mineral: isStop ? analysis.matched_mineral : null,
+          per_mineral: analysis.per_mineral,
+          per_mineral_confidence: mergedConf,
           rock_description: analysis.rock_description,
-          rocks: analysis.rocks,
-          ranked_rocks: ranked,
+          ranked_rocks: scanRanked,
           stop_threshold: threshold,
           agent_panel_text: agentText,
           focus_rock_index: focusIndex,
@@ -411,14 +466,10 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
 
     if (phase === "confirm1") {
       const minC = analysisMin(ctx);
-      const qualRanked = rankRocks(analysis.rocks);
-      const qualifying = qualRanked.filter((r) => r.confidence >= minC);
-      const agentText = panelConfirm1(qualRanked, minC);
-      const focus = focusRockFromSession(session);
-      const bestConfidence =
-        qualifying.find((r) => r.index === focus.index)?.confidence ??
-        qualifying[0]?.confidence ??
-        0;
+      const qualRanked = ranked.filter((r) => r.confidence >= minC);
+      const agentText = panelConfirm1(ranked, minC);
+      const focus = focusFromSession(session);
+      const bestConfidence = analysis.best_confidence;
 
       await ctx.db.query(
         `UPDATE scan_sessions
@@ -426,19 +477,28 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
              ui_phase = 'confirm1',
              agent_panel_text = $3,
              latest_preview_object_id = COALESCE($4, latest_preview_object_id),
+             per_mineral_confidence = $5,
              updated_at = now()
          WHERE id = $1`,
-        [session_id, bestConfidence, agentText, previewId],
+        [
+          session_id,
+          bestConfidence,
+          agentText,
+          previewId,
+          JSON.stringify(mergedConf),
+        ],
       );
 
       return new Response(
         JSON.stringify({
           phase,
           best_confidence: bestConfidence,
-          focus_rock_description: focus.description,
+          focus_rock_description: session.rock_description || focus.description,
           focus_rock_index: focus.index,
-          qualifying_rocks: qualifying,
-          ranked_rocks: qualRanked,
+          matched_mineral: session.matched_mineral ?? analysis.matched_mineral,
+          per_mineral: analysis.per_mineral,
+          qualifying_rocks: qualRanked,
+          ranked_rocks: ranked,
           analysis_confidence_min: minC,
           agent_panel_text: agentText,
         }),

@@ -145,6 +145,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
   }
   const session = sessionRes.rows[0];
   const focusIndex = Number(session.focus_rock_index) || 1;
+  const matchedMineral = session.matched_mineral || session.target_mineral;
 
   if (geometry) {
     if (session.status !== "pending_geometry") {
@@ -157,7 +158,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     const headline = successHeadline(focusIndex);
     const movement = await movementGuidance(
       ctx,
-      session.target_mineral,
+      matchedMineral,
       session.rock_description || "detected rock",
       Number(distance_cm ?? -1),
       Number(angle_deg ?? 0),
@@ -202,6 +203,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
         needs_analysis: true,
         needs_geometry: false,
         result_message: headline,
+        matched_mineral: matchedMineral ?? null,
+        per_mineral_confidence: session.per_mineral_confidence ?? null,
         distance_cm: distance_cm ?? null,
         angle_deg: angle_deg ?? null,
         movement_guidance: movement,
@@ -253,6 +256,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
         needs_analysis: true,
         needs_geometry: true,
         result_message: headline,
+        matched_mineral: matchedMineral ?? null,
+        per_mineral_confidence: session.per_mineral_confidence ?? null,
         focus_rock_index: focusIndex,
         analysis_confidence_range: [minC, maxC],
       }),
@@ -303,6 +308,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
       result_message: mistakeHeadline,
       secondary_message: secondary,
       agent_panel_text: agentText,
+      matched_mineral: matchedMineral ?? null,
+      per_mineral_confidence: session.per_mineral_confidence ?? null,
       analysis_confidence_range: [minC, maxC],
     }),
     { status: 200, headers: { "Content-Type": "application/json", ...cors } },
