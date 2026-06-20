@@ -8,7 +8,7 @@ iPhone (Continuity Camera) capture + Butterbase backend orchestration for a hack
 |---|---|
 | **Frontend** | User enters target mineral, dual panels (mineral ID text + camera snapshot), polls `scan-status` |
 | **Butterbase functions** (`backend/functions/`) | Session state, vision mineral classification, final guidance |
-| **Local worker** (`scan_worker.py`) | Claims sessions, captures from iPhone every N seconds, runs distance/angle |
+| **Local worker** (`scan_worker.py`) | Claims sessions, captures from iPhone, uploads via `storage.py`, runs distance/angle after confirm |
 | **tools.py** | OpenCV camera + geometry (Person A contract) |
 
 ## Quick start (demo day)

@@ -265,6 +265,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     image_base64?: string;
     focus_rock_description?: string;
     camera_object_id?: string;
+    preview_object_id?: string;
   };
   try {
     body = await req.json();
@@ -281,6 +282,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     image_base64,
     focus_rock_description,
     camera_object_id,
+    preview_object_id,
   } = body;
   if (!session_id || !image_base64) {
     return new Response(JSON.stringify({ error: "session_id and image_base64 required" }), {
@@ -297,7 +299,7 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
   const session = sessionRes.rows[0];
-  const previewId = camera_object_id || null;
+  const previewId = camera_object_id || preview_object_id || null;
 
   try {
     if (phase === "confirm2") {

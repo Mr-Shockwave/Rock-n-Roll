@@ -107,6 +107,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     confirm_confidence_1?: number;
     confirm_confidence_2?: number;
     geometry?: boolean;
+    overlay_object_id?: string;
+    final_frame_object_id?: string;
   };
   try {
     body = await req.json();
@@ -124,6 +126,8 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     confirm_confidence_1,
     confirm_confidence_2,
     geometry = false,
+    overlay_object_id,
+    final_frame_object_id,
   } = body;
   if (!session_id) {
     return new Response(JSON.stringify({ error: "session_id required" }), {
@@ -175,9 +179,20 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
            agent_panel_text = $6,
            ui_phase = 'complete',
            secondary_message = NULL,
+           overlay_object_id = COALESCE($7, overlay_object_id),
+           final_frame_object_id = COALESCE($8, final_frame_object_id),
            updated_at = now()
        WHERE id = $1`,
-      [session_id, distance_cm ?? null, angle_deg ?? null, movement || null, headline, agentText],
+      [
+        session_id,
+        distance_cm ?? null,
+        angle_deg ?? null,
+        movement || null,
+        headline,
+        agentText,
+        overlay_object_id ?? null,
+        final_frame_object_id ?? null,
+      ],
     );
 
     return new Response(

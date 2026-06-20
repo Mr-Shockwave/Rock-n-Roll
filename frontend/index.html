@@ -142,13 +142,13 @@
       agentPanel.textContent = text || "—";
     }
 
-    function setCameraImage(url, objectId) {
+    function setCameraImage(url, trackId) {
       if (!url) return;
-      if (objectId && objectId === lastPreviewObjectId) return;
-      lastPreviewObjectId = objectId || url;
+      if (trackId && trackId === lastPreviewObjectId) return;
+      lastPreviewObjectId = trackId || url;
       cameraPanel.innerHTML = "";
       const img = document.createElement("img");
-      img.alt = "Latest camera snapshot";
+      img.alt = "Camera snapshot";
       img.src = url;
       cameraPanel.appendChild(img);
     }
@@ -201,8 +201,17 @@
         setAgentText(data.agent_panel_text);
       }
 
-      if (data.camera_image_url) {
-        setCameraImage(data.camera_image_url, data.latest_preview_object_id);
+      const imageUrl =
+        data.camera_image_url ||
+        data.overlay_image_url ||
+        data.preview_image_url ||
+        data.final_frame_image_url;
+      const trackId =
+        data.overlay_object_id ||
+        data.latest_preview_object_id ||
+        data.final_frame_object_id;
+      if (imageUrl) {
+        setCameraImage(imageUrl, trackId);
       }
 
       if (["complete", "timeout", "error"].includes(data.status)) {

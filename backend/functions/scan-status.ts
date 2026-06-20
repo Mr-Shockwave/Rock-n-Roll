@@ -4,6 +4,8 @@ function controlBase(ctx: any): string {
   return "https://api.butterbase.ai";
 }
 
+// Mint a fresh presigned download URL for a stored object id. Presigned URLs
+// expire (~1h), so we generate a new one on every status poll.
 async function downloadUrl(ctx: any, objectId: string | null): Promise<string | null> {
   if (!objectId) return null;
   const appId = ctx.env.BUTTERBASE_APP_ID;
@@ -56,8 +58,15 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
   }
 
   const row = result.rows[0];
-  const previewId = row.latest_preview_object_id || row.final_frame_object_id;
-  const cameraImageUrl = await downloadUrl(ctx, previewId);
+
+  const [previewUrl, overlayUrl, finalFrameUrl] = await Promise.all([
+    downloadUrl(ctx, row.latest_preview_object_id),
+    downloadUrl(ctx, row.overlay_object_id),
+    downloadUrl(ctx, row.final_frame_object_id),
+  ]);
+
+  // Prefer annotated overlay when complete; else live preview or final frame.
+  const cameraImageUrl = overlayUrl || previewUrl || finalFrameUrl;
 
   let rankedRocks = [];
   try {
@@ -88,6 +97,11 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
       focus_rock_index: row.focus_rock_index,
       ranked_rocks: rankedRocks,
       latest_preview_object_id: row.latest_preview_object_id,
+      overlay_object_id: row.overlay_object_id,
+      final_frame_object_id: row.final_frame_object_id,
+      preview_image_url: previewUrl,
+      overlay_image_url: overlayUrl,
+      final_frame_image_url: finalFrameUrl,
       camera_image_url: cameraImageUrl,
       error: row.error,
       created_at: row.created_at,
