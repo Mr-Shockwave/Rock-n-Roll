@@ -29,6 +29,33 @@ import cv2
 import numpy as np
 import requests
 
+
+def _load_env_file(path: str = None) -> None:
+    """Load KEY=VALUE pairs from a .env file into os.environ (no overrides).
+
+    Dependency-free (no python-dotenv). Real environment variables always win
+    over the file, so `CAMERA_INDEX=0 python tools.py` still overrides .env.
+    Looks for .env next to this file so it works regardless of cwd.
+    """
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except FileNotFoundError:
+        pass
+
+
+_load_env_file()
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

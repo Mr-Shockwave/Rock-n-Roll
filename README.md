@@ -55,11 +55,24 @@ python camera_tool.py                      # capture + describe only
 Without `BUTTERBASE_API_KEY`, descriptions fall back to a local OpenCV summary
 (color + size) so the pipeline still runs.
 
+### Using a `.env` file
+
+Easiest way to set the key: copy the template and fill it in. `tools.py` and
+`camera_tool.py` auto-load `.env` on import (no extra dependency), and real
+environment variables still override it.
+
+```bash
+cp .env.example .env
+# then edit .env and paste your BUTTERBASE_API_KEY=bb_sk_...
+```
+
+`.env` is gitignored, so your key is never committed.
+
 ## Notes
 
-- **Camera auto-detect:** scans indices 0–3 and prefers the highest working one
-  (the Mac's built-in cam is usually index 0, so the iPhone lands higher). Set
-  `CAMERA_INDEX` to pin it.
+- **Camera index:** the iPhone (Continuity Camera) is usually index **0** and the
+  built-in laptop cam is **1**. Auto-detect can't reliably probe a sleeping
+  Continuity Camera, so **pin it** with `CAMERA_INDEX` (set in `.env`).
 - **Autofocus:** 10 warmup frames are discarded before saving so close-up shots
   aren't blurry.
 - **Light vs dark rocks:** contour detection combines Otsu (both polarities) and
