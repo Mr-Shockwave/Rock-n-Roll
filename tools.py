@@ -100,6 +100,57 @@ def fn_url(name: str) -> str:
     return f"{get_api_base()}/fn/{name}"
 
 
+def storage_control_base() -> str:
+    """Control API host (storage routes live here, not under /v1/app_)."""
+    url = os.environ.get("BUTTERBASE_API_URL", DEFAULT_API_BASE).rstrip("/")
+    if "/v1/" in url:
+        return url.split("/v1/")[0]
+    return DEFAULT_API_BASE
+
+
+def upload_preview_image(image_path: str, session_id: str, phase: str) -> str | None:
+    """Upload a camera snapshot to Butterbase storage; return object_id or None."""
+    api_key = os.environ.get("BUTTERBASE_API_KEY")
+    app_id = os.environ.get("BUTTERBASE_APP_ID")
+    if not api_key or not app_id:
+        return None
+    try:
+        size = os.path.getsize(image_path)
+        filename = f"scan_{session_id}_{phase}_{int(time.time() * 1000)}.jpg"
+        resp = requests.post(
+            f"{storage_control_base()}/storage/{app_id}/upload",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "filename": filename,
+                "contentType": "image/jpeg",
+                "sizeBytes": size,
+                "public": True,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        upload_url = body.get("uploadUrl") or body.get("upload_url")
+        object_id = body.get("objectId") or body.get("object_id")
+        if not upload_url or not object_id:
+            return None
+        with open(image_path, "rb") as f:
+            put = requests.put(
+                upload_url,
+                data=f,
+                headers={"Content-Type": "image/jpeg"},
+                timeout=60,
+            )
+        put.raise_for_status()
+        return str(object_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tools] storage upload failed: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Shared contour detection (robust to light AND dark rocks)
 # ---------------------------------------------------------------------------

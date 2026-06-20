@@ -30,6 +30,8 @@ def main() -> None:
 
     shared_env = {
         "BUTTERBASE_API_KEY": api_key,
+        "BUTTERBASE_APP_ID": app_id,
+        "BUTTERBASE_API_URL": app_url,
         "CONFIDENCE_STOP_THRESHOLD": env.get("CONFIDENCE_STOP_THRESHOLD", "0.5"),
         "CONFIDENCE_ANALYSIS_MIN": env.get("CONFIDENCE_ANALYSIS_MIN", "0.5"),
         "CONFIDENCE_ANALYSIS_MAX": env.get("CONFIDENCE_ANALYSIS_MAX", "0.7"),

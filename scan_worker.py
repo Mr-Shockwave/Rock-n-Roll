@@ -1,178 +1,239 @@
-"""Local scan worker — polls Butterbase for queued sessions and runs the camera loop.
-
-Run alongside the frontend during the demo:
-    python scan_worker.py
-
-The frontend calls scan-start on Butterbase; this worker claims the session,
-captures from the iPhone (Continuity Camera), uploads frames, then runs local
-distance/angle on the final confirmation frame.
-"""
-
-from __future__ import annotations
-
-import base64
-import json
-import sys
-import time
-
-import requests
-
-from tools import (
-    CONFIDENCE_STOP_THRESHOLD,
-    SCAN_INTERVAL_SECONDS,
-    SCAN_TIMEOUT_SECONDS,
-    angle_tool,
-    capture_frame_only,
-    distance_tool,
-    fn_url,
-    get_api_base,
-)
-
-
-def _auth_headers() -> dict:
-    import os
-
-    key = os.environ.get("BUTTERBASE_API_KEY")
-    if not key:
-        raise RuntimeError("BUTTERBASE_API_KEY not set")
-    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-
-def _image_base64(image_path: str) -> str:
-    from tools import _encode_image_for_vision
-
-    data_uri = _encode_image_for_vision(image_path)
-    if data_uri.startswith("data:"):
-        return data_uri.split(",", 1)[1]
-    return data_uri
-
-
-def _post_frame(session_id: str, phase: str, image_path: str) -> dict:
-    resp = requests.post(
-        fn_url("scan-frame"),
-        headers=_auth_headers(),
-        json={
-            "session_id": session_id,
-            "phase": phase,
-            "image_base64": _image_base64(image_path),
-        },
-        timeout=90,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _claim_session() -> dict | None:
-    resp = requests.post(fn_url("scan-claim"), headers=_auth_headers(), json={}, timeout=30)
-    resp.raise_for_status()
-    body = resp.json()
-    return body.get("session")
-
-
-def _finalize(
-    session_id: str,
-    distance_cm: float,
-    angle_deg: float,
-    c1: float,
-    c2: float,
-) -> dict:
-    resp = requests.post(
-        fn_url("scan-finalize"),
-        headers=_auth_headers(),
-        json={
-            "session_id": session_id,
-            "distance_cm": distance_cm,
-            "angle_deg": angle_deg,
-            "confirm_confidence_1": c1,
-            "confirm_confidence_2": c2,
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _timeout(session_id: str) -> None:
-    requests.post(
-        fn_url("scan-timeout"),
-        headers=_auth_headers(),
-        json={"session_id": session_id},
-        timeout=30,
-    )
-
-
-def run_session(session: dict) -> None:
-    session_id = session["session_id"]
-    target = session.get("target_mineral", "?")
-    print(f"[worker] scanning for '{target}' (session {session_id})")
-    print(
-        f"[worker] interval={SCAN_INTERVAL_SECONDS}s timeout={SCAN_TIMEOUT_SECONDS}s "
-        f"stop>{CONFIDENCE_STOP_THRESHOLD}"
-    )
-
-    deadline = time.time() + SCAN_TIMEOUT_SECONDS
-    stop_triggered = False
-
-    while time.time() < deadline and not stop_triggered:
-        image_path = capture_frame_only()
-        result = _post_frame(session_id, "scan", image_path)
-        conf = result.get("best_confidence", 0)
-        action = result.get("action", "continue")
-        print(f"[worker] scan frame conf={conf:.2f} action={action}")
-        if action == "stop":
-            stop_triggered = True
-            break
-        time.sleep(SCAN_INTERVAL_SECONDS)
-
-    if not stop_triggered:
-        print("[worker] scan timed out — no promising rocks found")
-        _timeout(session_id)
-        return
-
-    confidences: list[float] = []
-    final_path = None
-    for phase in ("confirm1", "confirm2"):
-        time.sleep(0.5)
-        final_path = capture_frame_only()
-        result = _post_frame(session_id, phase, final_path)
-        conf = float(result.get("best_confidence", 0))
-        confidences.append(conf)
-        print(f"[worker] {phase} conf={conf:.2f}")
-
-    avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
-    dist = distance_tool(final_path or capture_frame_only())
-    ang = angle_tool(final_path or capture_frame_only())
-    distance_cm = dist.get("distance_cm", -1)
-    angle_deg = ang.get("angle_deg", 0.0)
-
-    print(f"[worker] geometry distance={distance_cm}cm angle={angle_deg}° avg_conf={avg_conf:.2f}")
-
-    outcome = _finalize(
-        session_id,
-        float(distance_cm) if distance_cm != -1 else -1,
-        float(angle_deg),
-        confidences[0] if confidences else 0.0,
-        confidences[1] if len(confidences) > 1 else confidences[0] if confidences else 0.0,
-    )
-    print(f"[worker] done: {json.dumps(outcome, indent=2)}")
-
-
-def main() -> None:
-    print(f"[worker] polling {get_api_base()}/fn/scan-claim …")
-    while True:
-        try:
-            session = _claim_session()
-            if session:
-                run_session(session)
-            else:
-                time.sleep(1.0)
-        except KeyboardInterrupt:
-            print("\n[worker] stopped")
-            sys.exit(0)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[worker] error: {exc}")
-            time.sleep(2.0)
-
-
-if __name__ == "__main__":
-    main()
+"""Local scan worker — polls Butterbase for queued sessions and runs the camera loop.
+
+Run alongside the frontend during the demo:
+    python scan_worker.py
+
+The frontend calls scan-start on Butterbase; this worker claims the session,
+captures from the iPhone (Continuity Camera), uploads frames, then runs local
+distance/angle on the final confirmation frame only after mineral ID passes.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+
+import requests
+
+from tools import (
+    CONFIDENCE_STOP_THRESHOLD,
+    SCAN_INTERVAL_SECONDS,
+    SCAN_TIMEOUT_SECONDS,
+    angle_tool,
+    capture_frame_only,
+    distance_tool,
+    fn_url,
+    get_api_base,
+    upload_preview_image,
+)
+
+
+def _auth_headers() -> dict:
+    import os
+
+    key = os.environ.get("BUTTERBASE_API_KEY")
+    if not key:
+        raise RuntimeError("BUTTERBASE_API_KEY not set")
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
+def _image_base64(image_path: str) -> str:
+    from tools import _encode_image_for_vision
+
+    data_uri = _encode_image_for_vision(image_path)
+    if data_uri.startswith("data:"):
+        return data_uri.split(",", 1)[1]
+    return data_uri
+
+
+def _post_frame(
+    session_id: str,
+    phase: str,
+    image_path: str,
+    *,
+    focus_rock_description: str | None = None,
+) -> dict:
+    camera_object_id = upload_preview_image(image_path, session_id, phase)
+    payload: dict = {
+        "session_id": session_id,
+        "phase": phase,
+        "image_base64": _image_base64(image_path),
+    }
+    if focus_rock_description:
+        payload["focus_rock_description"] = focus_rock_description
+    if camera_object_id:
+        payload["camera_object_id"] = camera_object_id
+    resp = requests.post(
+        fn_url("scan-frame"),
+        headers=_auth_headers(),
+        json=payload,
+        timeout=90,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _claim_session() -> dict | None:
+    resp = requests.post(fn_url("scan-claim"), headers=_auth_headers(), json={}, timeout=30)
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("session")
+
+
+def _finalize(
+    session_id: str,
+    *,
+    confirm_confidence_1: float | None = None,
+    confirm_confidence_2: float | None = None,
+    distance_cm: float | None = None,
+    angle_deg: float | None = None,
+    geometry: bool = False,
+) -> dict:
+    payload: dict = {"session_id": session_id}
+    if confirm_confidence_1 is not None:
+        payload["confirm_confidence_1"] = confirm_confidence_1
+    if confirm_confidence_2 is not None:
+        payload["confirm_confidence_2"] = confirm_confidence_2
+    if geometry:
+        payload["geometry"] = True
+        payload["distance_cm"] = distance_cm
+        payload["angle_deg"] = angle_deg
+    resp = requests.post(
+        fn_url("scan-finalize"),
+        headers=_auth_headers(),
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _timeout(session_id: str) -> None:
+    requests.post(
+        fn_url("scan-timeout"),
+        headers=_auth_headers(),
+        json={"session_id": session_id},
+        timeout=30,
+    )
+
+
+def _run_confirmation(session_id: str) -> tuple[list[float], str | None, str | None]:
+    """confirm1 + confirm2; returns confidences, focus description, last image path."""
+    confidences: list[float] = []
+    final_path: str | None = None
+    focus_rock: str | None = None
+
+    time.sleep(0.5)
+    final_path = capture_frame_only()
+    result = _post_frame(session_id, "confirm1", final_path)
+    c1 = float(result.get("best_confidence", 0))
+    confidences.append(c1)
+    focus_rock = result.get("focus_rock_description")
+    qualifying = result.get("qualifying_rocks") or []
+    print(
+        f"[worker] confirm1 conf={c1:.2f} "
+        f"qualifying={len(qualifying)} focus={focus_rock!r}"
+    )
+
+    time.sleep(0.5)
+    final_path = capture_frame_only()
+    if focus_rock:
+        result = _post_frame(
+            session_id,
+            "confirm2",
+            final_path,
+            focus_rock_description=focus_rock,
+        )
+        c2 = float(result.get("best_confidence", 0))
+        print(f"[worker] confirm2 conf={c2:.2f} (focused rock only)")
+    else:
+        c2 = 0.0
+        print("[worker] confirm2 skipped — no focus rock from stop frame")
+    confidences.append(c2)
+
+    return confidences, focus_rock, final_path
+
+
+def run_session(session: dict) -> None:
+    session_id = session["session_id"]
+    target = session.get("target_mineral", "?")
+    print(f"[worker] scanning for '{target}' (session {session_id})")
+    print(
+        f"[worker] interval={SCAN_INTERVAL_SECONDS}s timeout={SCAN_TIMEOUT_SECONDS}s "
+        f"stop>{CONFIDENCE_STOP_THRESHOLD}"
+    )
+
+    deadline = time.time() + SCAN_TIMEOUT_SECONDS
+
+    while time.time() < deadline:
+        stop_triggered = False
+
+        while time.time() < deadline and not stop_triggered:
+            image_path = capture_frame_only()
+            result = _post_frame(session_id, "scan", image_path)
+            conf = result.get("best_confidence", 0)
+            action = result.get("action", "continue")
+            print(f"[worker] scan frame conf={conf:.2f} action={action}")
+            if action == "stop":
+                stop_triggered = True
+                break
+            time.sleep(SCAN_INTERVAL_SECONDS)
+
+        if not stop_triggered:
+            print("[worker] scan timed out — no promising rocks found")
+            _timeout(session_id)
+            return
+
+        confidences, _focus, final_path = _run_confirmation(session_id)
+
+        outcome = _finalize(
+            session_id,
+            confirm_confidence_1=confidences[0] if confidences else 0.0,
+            confirm_confidence_2=confidences[1] if len(confidences) > 1 else 0.0,
+        )
+        print(f"[worker] decision: {json.dumps(outcome, indent=2)}")
+
+        if outcome.get("mistake_continue"):
+            print("[worker] confirmation below threshold — resuming scan")
+            time.sleep(SCAN_INTERVAL_SECONDS)
+            continue
+
+        if outcome.get("needs_geometry"):
+            dist = distance_tool(final_path or capture_frame_only())
+            ang = angle_tool(final_path or capture_frame_only())
+            distance_cm = dist.get("distance_cm", -1)
+            angle_deg = ang.get("angle_deg", 0.0)
+            print(
+                f"[worker] approach geometry distance={distance_cm}cm angle={angle_deg}°"
+            )
+            outcome = _finalize(
+                session_id,
+                distance_cm=float(distance_cm) if distance_cm != -1 else -1,
+                angle_deg=float(angle_deg),
+                geometry=True,
+            )
+
+        print(f"[worker] done: {json.dumps(outcome, indent=2)}")
+        return
+
+
+def main() -> None:
+    print(f"[worker] polling {get_api_base()}/fn/scan-claim …")
+    while True:
+        try:
+            session = _claim_session()
+            if session:
+                run_session(session)
+            else:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("\n[worker] stopped")
+            sys.exit(0)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[worker] error: {exc}")
+            time.sleep(2.0)
+
+
+if __name__ == "__main__":
+    main()

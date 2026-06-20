@@ -38,6 +38,9 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
      SET status = 'timeout',
          needs_analysis = false,
          result_message = 'No promising rocks found.',
+         agent_panel_text = 'No promising rocks found.',
+         ui_phase = 'timeout',
+         secondary_message = NULL,
          updated_at = now()
      WHERE id = $1`,
     [session_id],

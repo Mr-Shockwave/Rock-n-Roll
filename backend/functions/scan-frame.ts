@@ -11,8 +11,66 @@ function stopThreshold(ctx: any): number {
   return Number.isFinite(n) ? n : 0.5;
 }
 
+function analysisMin(ctx: any): number {
+  const raw = ctx.env.CONFIDENCE_ANALYSIS_MIN || "0.5";
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : 0.5;
+}
+
 function visionModel(ctx: any): string {
   return ctx.env.BUTTERBASE_VISION_MODEL || "anthropic/claude-haiku-4.5";
+}
+
+type RankedRock = { index: number; description: string; confidence: number };
+
+function rankRocks(rocks: Array<{ description: string; confidence: number }>): RankedRock[] {
+  return [...rocks]
+    .sort((a, b) => b.confidence - a.confidence)
+    .map((r, i) => ({
+      index: i + 1,
+      description: r.description,
+      confidence: r.confidence,
+    }));
+}
+
+function fmtPct(c: number): string {
+  return `${Math.round(c * 100)}%`;
+}
+
+function panelScan(ranked: RankedRock[]): string {
+  if (!ranked.length) return "No rocks detected.";
+  return [
+    `${ranked.length} rock(s) detected`,
+    ...ranked.map((r) => `Rock ${r.index}: ${fmtPct(r.confidence)}`),
+  ].join("\n");
+}
+
+function panelConfirm1(ranked: RankedRock[], minC: number): string {
+  const qual = ranked.filter((r) => r.confidence >= minC);
+  if (!qual.length) return `0 rock(s) over threshold (${fmtPct(minC)})`;
+  return [
+    `${qual.length} rock(s) over threshold`,
+    ...qual.map((r) => `Rock ${r.index}: ${fmtPct(r.confidence)}`),
+  ].join("\n");
+}
+
+function panelConfirm2(focusIndex: number, confidence: number): string {
+  return `Rock ${focusIndex}: ${fmtPct(confidence)}`;
+}
+
+function focusRockFromSession(session: any): {
+  index: number;
+  description: string | null;
+} {
+  const index = Number(session.focus_rock_index) || 1;
+  try {
+    const ranked: RankedRock[] = JSON.parse(session.ranked_rocks_json || "[]");
+    const hit = ranked.find((r) => r.index === index);
+    if (hit?.description) return { index, description: hit.description };
+  } catch {
+    /* ignore */
+  }
+  return { index, description: session.rock_description || null };
 }
 
 async function analyzeFrame(
@@ -107,6 +165,83 @@ If no rocks visible, return best_confidence 0.0.`;
   };
 }
 
+async function analyzeFocusedRock(
+  ctx: any,
+  targetMineral: string,
+  imageBase64: string,
+  focusRockDescription: string,
+): Promise<{
+  best_confidence: number;
+  rock_description: string;
+}> {
+  const { BUTTERBASE_APP_ID, BUTTERBASE_API_URL, BUTTERBASE_API_KEY } = ctx.env;
+
+  const systemPrompt = `You are a geologist assistant for a rock-scanning demo.
+The user is searching for target mineral/rock type: "${targetMineral}".
+A prior frame identified this specific rock as the best candidate:
+"${focusRockDescription}"
+
+Analyze ONLY that rock in the current image. Ignore all other rocks.
+Reply with JSON only (no markdown):
+{
+  "confidence": 0.0-1.0,
+  "rock_description": "brief description confirming you are looking at the same rock"
+}
+Use confidence as probability the target mineral is present in THIS rock only.
+If the focused rock is not visible, return confidence 0.0.`;
+
+  const dataUri = imageBase64.startsWith("data:")
+    ? imageBase64
+    : `data:image/jpeg;base64,${imageBase64}`;
+
+  const aiResp = await fetch(
+    `${BUTTERBASE_API_URL}/v1/${BUTTERBASE_APP_ID}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BUTTERBASE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: visionModel(ctx),
+        max_tokens: 250,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text:
+                  `Re-check ONLY this rock for target mineral/rock: ${targetMineral}\n` +
+                  `Focused rock: ${focusRockDescription}`,
+              },
+              { type: "image_url", image_url: { url: dataUri, detail: "low" } },
+            ],
+          },
+        ],
+      }),
+    },
+  );
+
+  if (!aiResp.ok) {
+    const errText = await aiResp.text();
+    throw new Error(`AI gateway error ${aiResp.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const aiJson = await aiResp.json();
+  const content = aiJson?.choices?.[0]?.message?.content || "{}";
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+  const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
+
+  return {
+    best_confidence: confidence,
+    rock_description: String(parsed.rock_description || focusRockDescription),
+  };
+}
+
 export default async function handler(req: Request, ctx: any): Promise<Response> {
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -124,7 +259,13 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
 
-  let body: { session_id?: string; phase?: string; image_base64?: string };
+  let body: {
+    session_id?: string;
+    phase?: string;
+    image_base64?: string;
+    focus_rock_description?: string;
+    camera_object_id?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -134,7 +275,13 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
 
-  const { session_id, phase = "scan", image_base64 } = body;
+  const {
+    session_id,
+    phase = "scan",
+    image_base64,
+    focus_rock_description,
+    camera_object_id,
+  } = body;
   if (!session_id || !image_base64) {
     return new Response(JSON.stringify({ error: "session_id and image_base64 required" }), {
       status: 400,
@@ -150,23 +297,98 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
   const session = sessionRes.rows[0];
+  const previewId = camera_object_id || null;
 
   try {
+    if (phase === "confirm2") {
+      const focus = focusRockFromSession(session);
+      const focusDescription =
+        (focus_rock_description || focus.description || "").trim();
+      if (!focusDescription) {
+        return new Response(
+          JSON.stringify({ error: "focus_rock_description required for confirm2" }),
+          { status: 400, headers: { "Content-Type": "application/json", ...cors } },
+        );
+      }
+
+      const focused = await analyzeFocusedRock(
+        ctx,
+        session.target_mineral,
+        image_base64,
+        focusDescription,
+      );
+
+      const agentText = panelConfirm2(focus.index, focused.best_confidence);
+
+      await ctx.db.query(
+        `UPDATE scan_sessions
+         SET confirm_confidence_2 = $2,
+             rock_description = COALESCE($3, rock_description),
+             status = 'confirming',
+             ui_phase = 'confirm2',
+             agent_panel_text = $4,
+             latest_preview_object_id = COALESCE($5, latest_preview_object_id),
+             final_frame_object_id = COALESCE($5, final_frame_object_id),
+             updated_at = now()
+         WHERE id = $1`,
+        [
+          session_id,
+          focused.best_confidence,
+          focused.rock_description,
+          agentText,
+          previewId,
+        ],
+      );
+
+      return new Response(
+        JSON.stringify({
+          phase,
+          best_confidence: focused.best_confidence,
+          rock_description: focused.rock_description,
+          focus_rock_description: focusDescription,
+          focus_rock_index: focus.index,
+          agent_panel_text: agentText,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json", ...cors } },
+      );
+    }
+
     const analysis = await analyzeFrame(ctx, session.target_mineral, image_base64);
     const threshold = stopThreshold(ctx);
     const action = analysis.best_confidence > threshold ? "stop" : "continue";
+    const ranked = rankRocks(analysis.rocks);
 
     if (phase === "scan") {
       const newMax = Math.max(session.max_confidence || 0, analysis.best_confidence);
+      const isStop = action === "stop";
+      const agentText = isStop ? "Stop" : panelScan(ranked);
+      const focusIndex = isStop && ranked.length ? ranked[0].index : session.focus_rock_index;
+      const rankedJson = isStop ? JSON.stringify(ranked) : session.ranked_rocks_json;
+
       await ctx.db.query(
         `UPDATE scan_sessions
          SET frame_count = frame_count + 1,
              max_confidence = $2,
              rock_description = COALESCE($3, rock_description),
-             status = CASE WHEN $4 = 'stop' THEN 'confirming' ELSE status END,
+             status = CASE WHEN $4 = 'stop' THEN 'confirming' ELSE 'scanning' END,
+             ui_phase = $5,
+             agent_panel_text = $6,
+             focus_rock_index = COALESCE($7, focus_rock_index),
+             ranked_rocks_json = COALESCE($8, ranked_rocks_json),
+             latest_preview_object_id = COALESCE($9, latest_preview_object_id),
              updated_at = now()
          WHERE id = $1`,
-        [session_id, newMax, analysis.rock_description, action],
+        [
+          session_id,
+          newMax,
+          isStop && ranked.length ? ranked[0].description : analysis.rock_description,
+          action,
+          isStop ? "stop" : "scan",
+          agentText,
+          focusIndex,
+          rankedJson,
+          previewId,
+        ],
       );
 
       return new Response(
@@ -176,30 +398,47 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
           max_confidence: newMax,
           rock_description: analysis.rock_description,
           rocks: analysis.rocks,
+          ranked_rocks: ranked,
           stop_threshold: threshold,
+          agent_panel_text: agentText,
+          focus_rock_index: focusIndex,
         }),
         { status: 200, headers: { "Content-Type": "application/json", ...cors } },
       );
     }
 
-    if (phase === "confirm1" || phase === "confirm2") {
-      const col = phase === "confirm1" ? "confirm_confidence_1" : "confirm_confidence_2";
+    if (phase === "confirm1") {
+      const minC = analysisMin(ctx);
+      const qualRanked = rankRocks(analysis.rocks);
+      const qualifying = qualRanked.filter((r) => r.confidence >= minC);
+      const agentText = panelConfirm1(qualRanked, minC);
+      const focus = focusRockFromSession(session);
+      const bestConfidence =
+        qualifying.find((r) => r.index === focus.index)?.confidence ??
+        qualifying[0]?.confidence ??
+        0;
+
       await ctx.db.query(
         `UPDATE scan_sessions
-         SET ${col} = $2,
-             rock_description = COALESCE($3, rock_description),
-             status = 'confirming',
+         SET confirm_confidence_1 = $2,
+             ui_phase = 'confirm1',
+             agent_panel_text = $3,
+             latest_preview_object_id = COALESCE($4, latest_preview_object_id),
              updated_at = now()
          WHERE id = $1`,
-        [session_id, analysis.best_confidence, analysis.rock_description],
+        [session_id, bestConfidence, agentText, previewId],
       );
 
       return new Response(
         JSON.stringify({
           phase,
-          best_confidence: analysis.best_confidence,
-          rock_description: analysis.rock_description,
-          rocks: analysis.rocks,
+          best_confidence: bestConfidence,
+          focus_rock_description: focus.description,
+          focus_rock_index: focus.index,
+          qualifying_rocks: qualifying,
+          ranked_rocks: qualRanked,
+          analysis_confidence_min: minC,
+          agent_panel_text: agentText,
         }),
         { status: 200, headers: { "Content-Type": "application/json", ...cors } },
       );

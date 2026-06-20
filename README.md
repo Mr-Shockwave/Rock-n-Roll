@@ -6,7 +6,7 @@ iPhone (Continuity Camera) capture + Butterbase backend orchestration for a hack
 
 | Component | Role |
 |---|---|
-| **Frontend** | User enters target mineral, clicks Start scan, polls Butterbase for results |
+| **Frontend** | User enters target mineral, dual panels (mineral ID text + camera snapshot), polls `scan-status` |
 | **Butterbase functions** (`backend/functions/`) | Session state, vision mineral classification, final guidance |
 | **Local worker** (`scan_worker.py`) | Claims sessions, captures from iPhone every N seconds, runs distance/angle |
 | **tools.py** | OpenCV camera + geometry (Person A contract) |
@@ -46,9 +46,10 @@ Or open `frontend/index.html` locally. Click **Start scan** after entering a tar
 1. Frontend → `scan-start` creates a queued session
 2. Worker → `scan-claim` picks up the session
 3. Every **2 s** (default): capture → `scan-frame` (vision) until confidence **> 0.5** or **30 s** timeout
-4. On stop: two confirmation captures → average their confidences
-5. Worker runs **distance** + **angle** on the **last confirmation frame**
-6. `scan-finalize` returns result to frontend
+4. On stop: **confirm1** lists qualifying rocks; **confirm2** re-checks the focus rock from stop
+5. If avg confirm confidence &lt; 0.5: agent shows *This might be a mistake* / *Continue moving* and **scan resumes**
+6. If avg passes: worker runs distance + angle, then movement guidance
+7. Camera snapshots upload to Butterbase storage; frontend loads presigned URLs from `scan-status`
 
 ### Tunables (`.env`)
 

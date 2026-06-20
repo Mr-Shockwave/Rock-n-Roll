@@ -1,3 +1,26 @@
+function controlBase(ctx: any): string {
+  const url = (ctx.env.BUTTERBASE_API_URL || "https://api.butterbase.ai").replace(/\/$/, "");
+  if (url.includes("/v1/")) return url.split("/v1/")[0];
+  return "https://api.butterbase.ai";
+}
+
+async function downloadUrl(ctx: any, objectId: string | null): Promise<string | null> {
+  if (!objectId) return null;
+  const appId = ctx.env.BUTTERBASE_APP_ID;
+  const apiKey = ctx.env.BUTTERBASE_API_KEY;
+  if (!appId || !apiKey) return null;
+  try {
+    const resp = await fetch(`${controlBase(ctx)}/storage/${appId}/download/${objectId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.downloadUrl || data.download_url || null;
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req: Request, ctx: any): Promise<Response> {
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -33,11 +56,22 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
   }
 
   const row = result.rows[0];
+  const previewId = row.latest_preview_object_id || row.final_frame_object_id;
+  const cameraImageUrl = await downloadUrl(ctx, previewId);
+
+  let rankedRocks = [];
+  try {
+    rankedRocks = JSON.parse(row.ranked_rocks_json || "[]");
+  } catch {
+    rankedRocks = [];
+  }
+
   return new Response(
     JSON.stringify({
       session_id: row.id,
       target_mineral: row.target_mineral,
       status: row.status,
+      ui_phase: row.ui_phase,
       frame_count: row.frame_count,
       max_confidence: row.max_confidence,
       confirm_confidence_1: row.confirm_confidence_1,
@@ -47,8 +81,14 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
       angle_deg: row.angle_deg,
       rock_description: row.rock_description,
       result_message: row.result_message,
+      secondary_message: row.secondary_message,
       movement_guidance: row.movement_guidance,
       needs_analysis: row.needs_analysis,
+      agent_panel_text: row.agent_panel_text,
+      focus_rock_index: row.focus_rock_index,
+      ranked_rocks: rankedRocks,
+      latest_preview_object_id: row.latest_preview_object_id,
+      camera_image_url: cameraImageUrl,
       error: row.error,
       created_at: row.created_at,
       updated_at: row.updated_at,

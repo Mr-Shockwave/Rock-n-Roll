@@ -10,7 +10,7 @@
       color: #1a1a1a;
       background: #f4f1ea;
     }
-    body { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
     h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
     p.sub { color: #555; margin-top: 0; }
     label { display: block; font-weight: 600; margin: 1rem 0 0.35rem; }
@@ -24,12 +24,68 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    #status {
-      margin-top: 1.5rem; padding: 1rem; background: #fff;
-      border-radius: 10px; border: 1px solid #ddd; min-height: 4rem;
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1.5rem;
     }
-    #result { margin-top: 1rem; padding: 1rem; background: #fff8e7;
-      border-radius: 10px; border: 1px solid #e6c878; display: none; }
+    @media (max-width: 720px) {
+      .panels { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: #fff;
+      border-radius: 10px;
+      border: 1px solid #ddd;
+      overflow: hidden;
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
+    }
+    .panel h2 {
+      font-size: 0.95rem;
+      margin: 0;
+      padding: 0.65rem 0.85rem;
+      background: #eef3e8;
+      border-bottom: 1px solid #ddd;
+    }
+    .panel-body {
+      padding: 0.85rem;
+      flex: 1;
+    }
+    #agentPanel {
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      min-height: 200px;
+    }
+    #cameraPanel {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #111;
+      min-height: 220px;
+    }
+    #cameraPanel img {
+      max-width: 100%;
+      max-height: 320px;
+      object-fit: contain;
+    }
+    #cameraPlaceholder {
+      color: #888;
+      font-size: 0.9rem;
+      text-align: center;
+      padding: 1rem;
+    }
+    #status {
+      margin-top: 1rem; padding: 0.75rem 1rem; background: #fff;
+      border-radius: 10px; border: 1px solid #ddd;
+    }
+    #result {
+      margin-top: 1rem; padding: 1rem; background: #fff8e7;
+      border-radius: 10px; border: 1px solid #e6c878; display: none;
+    }
     #result.visible { display: block; }
     .metric { margin: 0.35rem 0; }
     .hint { font-size: 0.85rem; color: #666; margin-top: 1.5rem; }
@@ -44,13 +100,27 @@
 
   <button id="startBtn">Start scan</button>
 
+  <div class="panels">
+    <section class="panel">
+      <h2>Mineral ID agent</h2>
+      <div class="panel-body">
+        <div id="agentPanel">Waiting for scan…</div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Camera</h2>
+      <div class="panel-body" id="cameraPanel">
+        <div id="cameraPlaceholder">Latest snapshot will appear here.</div>
+      </div>
+    </section>
+  </div>
+
   <div id="status">Enter a mineral and click Start scan. Make sure <code>python scan_worker.py</code> is running on the Mac.</div>
   <div id="result"></div>
 
-  <p class="hint">Demo rocks: quartz, pumice, granite, sandstone. Try searching for minerals they contain (e.g. feldspar in granite).</p>
+  <p class="hint">Demo rocks: quartz, pumice, granite, sandstone. Rock numbers are listed in the agent panel (confidence high → low).</p>
 
   <script>
-    // Set in .env / deploy — override via query ?api=https://api.butterbase.ai/v1/app_xxx
     const params = new URLSearchParams(location.search);
     const API_BASE = params.get("api") || "https://api.butterbase.ai/v1/app_c78wpyrmhljf";
 
@@ -58,11 +128,29 @@
     const startBtn = document.getElementById("startBtn");
     const statusEl = document.getElementById("status");
     const resultEl = document.getElementById("result");
+    const agentPanel = document.getElementById("agentPanel");
+    const cameraPanel = document.getElementById("cameraPanel");
 
     let pollTimer = null;
+    let lastPreviewObjectId = null;
 
     function setStatus(msg) {
       statusEl.textContent = msg;
+    }
+
+    function setAgentText(text) {
+      agentPanel.textContent = text || "—";
+    }
+
+    function setCameraImage(url, objectId) {
+      if (!url) return;
+      if (objectId && objectId === lastPreviewObjectId) return;
+      lastPreviewObjectId = objectId || url;
+      cameraPanel.innerHTML = "";
+      const img = document.createElement("img");
+      img.alt = "Latest camera snapshot";
+      img.src = url;
+      cameraPanel.appendChild(img);
     }
 
     function showResult(data) {
@@ -71,9 +159,17 @@
         resultEl.innerHTML = `<strong>No promising rocks found.</strong><p>Scan timed out after 30 seconds.</p>`;
         return;
       }
-      if (data.needs_analysis) {
+      if (data.ui_phase === "mistake" || data.secondary_message === "Continue moving") {
         resultEl.innerHTML = `
-          <strong>${data.result_message}</strong>
+          <strong>${data.result_message || "This might be a mistake"}</strong>
+          <p>${data.secondary_message || "Continue moving"}</p>
+        `;
+        return;
+      }
+      if (data.needs_analysis) {
+        const headline = data.result_message || `Rock ${data.focus_rock_index || 1} needs more analysis.`;
+        resultEl.innerHTML = `
+          <strong>${headline}</strong>
           <div class="metric">Distance: ${data.distance_cm ?? "—"} cm</div>
           <div class="metric">Angle: ${data.angle_deg ?? "—"}°</div>
           <div class="metric">Avg confidence: ${(data.avg_confidence ?? 0).toFixed(2)}</div>
@@ -84,9 +180,31 @@
       }
     }
 
+    function liveStatusMessage(data) {
+      if (data.status === "pending_geometry") {
+        return "Rock confirmed — computing approach distance and angle…";
+      }
+      if (data.status === "scanning" && data.ui_phase === "mistake") {
+        return "Resuming scan after low confirmation…";
+      }
+      if (data.status === "queued") {
+        return "Session queued — waiting for camera worker…";
+      }
+      return `Scanning… status=${data.status} phase=${data.ui_phase || "—"} frames=${data.frame_count ?? 0}`;
+    }
+
     async function pollStatus(sessionId) {
       const resp = await fetch(`${API_BASE}/fn/scan-status?session_id=${sessionId}`);
       const data = await resp.json();
+
+      if (data.agent_panel_text) {
+        setAgentText(data.agent_panel_text);
+      }
+
+      if (data.camera_image_url) {
+        setCameraImage(data.camera_image_url, data.latest_preview_object_id);
+      }
+
       if (["complete", "timeout", "error"].includes(data.status)) {
         clearInterval(pollTimer);
         startBtn.disabled = false;
@@ -94,7 +212,8 @@
         showResult(data);
         return;
       }
-      setStatus(`Scanning… status=${data.status} frames=${data.frame_count ?? 0} max_conf=${(data.max_confidence ?? 0).toFixed(2)}`);
+
+      setStatus(liveStatusMessage(data));
     }
 
     startBtn.addEventListener("click", async () => {
@@ -104,6 +223,9 @@
       startBtn.disabled = true;
       resultEl.classList.remove("visible");
       resultEl.innerHTML = "";
+      lastPreviewObjectId = null;
+      cameraPanel.innerHTML = '<div id="cameraPlaceholder">Latest snapshot will appear here.</div>';
+      setAgentText("Starting scan…");
       setStatus("Starting scan…");
 
       try {
