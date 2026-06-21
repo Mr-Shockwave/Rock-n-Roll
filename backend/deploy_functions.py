@@ -43,7 +43,7 @@ def main() -> None:
     for path in sorted(FUNCTIONS_DIR.glob("*.ts")):
         name = path.stem
         code = path.read_text(encoding="utf-8")
-        method = "GET" if name == "scan-status" else "POST"
+        method = "GET" if name in ("scan-status", "scan-latest", "scan-image") else "POST"
         body = {
             "name": name,
             "code": code,

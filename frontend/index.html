@@ -56,9 +56,11 @@
     #agentPanel {
       white-space: pre-wrap;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.9rem;
-      line-height: 1.5;
+      font-size: 0.85rem;
+      line-height: 1.45;
       min-height: 200px;
+      max-height: 320px;
+      overflow-y: auto;
     }
     #cameraPanel {
       display: flex;
@@ -123,6 +125,14 @@
   <script>
     const params = new URLSearchParams(location.search);
     const API_BASE = params.get("api") || "https://api.butterbase.ai/v1/app_c78wpyrmhljf";
+    // Local capture the worker writes each frame. Shown directly when index.html
+    // is opened locally (file://) on the Mac running scan_worker.py. Override
+    // with ?img=... if needed.
+    const LOCAL_IMG = params.get("img") || "../captures/latest.jpg";
+    // Local (file://) frontends read the worker's captures/latest.jpg directly.
+    // Remote (butterbase.dev) frontends can't, so they fetch frames from
+    // Butterbase Storage via the scan-image endpoint. ?mode=remote forces it.
+    const IS_LOCAL = params.get("mode") !== "remote" && location.protocol === "file:";
 
     const mineralEl = document.getElementById("mineral");
     const startBtn = document.getElementById("startBtn");
@@ -138,19 +148,105 @@
       statusEl.textContent = msg;
     }
 
-    function setAgentText(text) {
-      agentPanel.textContent = text || "—";
+    // --- live scan log (left panel) ---
+    let logEntries = [];
+    let lastLoggedText = "";
+    let lastPhase = "";
+
+    function appendLog(text) {
+      if (!text || text === lastLoggedText) return; // skip blanks + repeats
+      lastLoggedText = text;
+      const ts = new Date().toLocaleTimeString([], { hour12: false });
+      logEntries.push(`[${ts}] ${text}`);
+      if (logEntries.length > 80) logEntries = logEntries.slice(-80);
+      agentPanel.textContent = logEntries.join("\n");
+      agentPanel.scrollTop = agentPanel.scrollHeight; // auto-scroll
     }
 
-    function setCameraImage(url, trackId) {
-      if (!url) return;
-      if (trackId && trackId === lastPreviewObjectId) return;
-      lastPreviewObjectId = trackId || url;
-      cameraPanel.innerHTML = "";
-      const img = document.createElement("img");
-      img.alt = "Camera snapshot";
+    function clearLog() {
+      logEntries = [];
+      lastLoggedText = "";
+      lastPhase = "";
+      agentPanel.textContent = "";
+    }
+
+    function phaseLabel(data) {
+      const s = data.status, u = data.ui_phase;
+      if (s === "queued") return "Queued — waiting for camera worker";
+      if (s === "scanning" && u === "mistake") return "Low confidence — resuming scan";
+      if (s === "scanning") return "Scanning rocks…";
+      if (u === "confirm1") return "Confirming best candidate";
+      if (u === "confirm2") return "Re-checking focused rock";
+      if (s === "pending_geometry") return "Computing approach distance & angle";
+      if (s === "complete") return "Scan complete";
+      if (s === "timeout") return "No promising rocks found";
+      if (s === "error") return "Error: " + (data.error || "unknown");
+      return `${s} / ${u || "-"}`;
+    }
+
+    let cameraTimer = null;
+
+    // Show the worker's latest local capture (captures/latest.jpg). Preload each
+    // refresh into an off-screen Image so we only swap on a fully-loaded frame —
+    // never a torn/half-written JPEG.
+    function refreshLocalCamera() {
+      const url = `${LOCAL_IMG}?t=${Date.now()}`;
+      const probe = new Image();
+      probe.onload = () => {
+        let img = cameraPanel.querySelector("img.cam");
+        if (!img) {
+          cameraPanel.innerHTML = "";
+          img = document.createElement("img");
+          img.className = "cam";
+          img.alt = "Camera snapshot";
+          cameraPanel.appendChild(img);
+        }
+        img.src = url;
+      };
+      probe.src = url; // if it fails (e.g. served remotely), placeholder stays
+    }
+    function startLocalCamera() {
+      refreshLocalCamera();
+      if (cameraTimer) clearInterval(cameraTimer);
+      cameraTimer = setInterval(refreshLocalCamera, 600);
+    }
+    function stopLocalCamera() {
+      if (cameraTimer) {
+        clearInterval(cameraTimer);
+        cameraTimer = null;
+      }
+    }
+
+    // Remote camera: when the image object-id changes, mint one fresh URL via
+    // scan-image and swap it in. Only fires on a new frame (~every 7s), so the
+    // slow storage round-trip never sits on the fast status poll.
+    let lastCameraObjectId = null;
+    function setCameraSrc(url) {
+      let img = cameraPanel.querySelector("img.cam");
+      if (!img) {
+        cameraPanel.innerHTML = "";
+        img = document.createElement("img");
+        img.className = "cam";
+        img.alt = "Camera snapshot";
+        cameraPanel.appendChild(img);
+      }
       img.src = url;
-      cameraPanel.appendChild(img);
+    }
+    async function refreshRemoteCamera(data) {
+      const oid =
+        data.overlay_object_id ||
+        data.latest_preview_object_id ||
+        data.final_frame_object_id;
+      if (!oid || oid === lastCameraObjectId) return;
+      lastCameraObjectId = oid;
+      try {
+        const r = await fetch(`${API_BASE}/fn/scan-image?object_id=${oid}`);
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.url) setCameraSrc(j.url);
+      } catch (e) {
+        /* transient — try again on the next object-id change */
+      }
     }
 
     function showResult(data) {
@@ -193,67 +289,87 @@
       return `Scanning… status=${data.status} phase=${data.ui_phase || "—"} frames=${data.frame_count ?? 0}`;
     }
 
-    async function pollStatus(sessionId) {
-      const resp = await fetch(`${API_BASE}/fn/scan-status?session_id=${sessionId}`);
-      const data = await resp.json();
+    let trackedSessionId = null;
 
-      if (data.agent_panel_text) {
-        setAgentText(data.agent_panel_text);
+    // Auto-follow the latest scan session — drives the log, result, and status
+    // continuously, no matter which tab (or the worker) started it. Runs forever.
+    async function poll() {
+      let data;
+      try {
+        const resp = await fetch(`${API_BASE}/fn/scan-latest`);
+        if (!resp.ok) return; // transient; try again next tick
+        data = await resp.json();
+      } catch (e) {
+        return; // backend slow/unreachable — silent retry
       }
-
-      const imageUrl =
-        data.camera_image_url ||
-        data.overlay_image_url ||
-        data.preview_image_url ||
-        data.final_frame_image_url;
-      const trackId =
-        data.overlay_object_id ||
-        data.latest_preview_object_id ||
-        data.final_frame_object_id;
-      if (imageUrl) {
-        setCameraImage(imageUrl, trackId);
-      }
-
-      if (["complete", "timeout", "error"].includes(data.status)) {
-        clearInterval(pollTimer);
-        startBtn.disabled = false;
-        setStatus(`Scan finished (${data.status}).`);
-        showResult(data);
+      if (!data || !data.session_id) {
+        setStatus("No scans yet — click Start scan (with the worker running).");
         return;
       }
 
-      setStatus(liveStatusMessage(data));
+      // New session → reset the log + result panel
+      if (data.session_id !== trackedSessionId) {
+        trackedSessionId = data.session_id;
+        lastPhase = "";
+        clearLog();
+        const targets = (data.target_minerals && data.target_minerals.length)
+          ? data.target_minerals.join(", ")
+          : data.target_mineral;
+        appendLog(`New scan — target: ${targets}`);
+        resultEl.classList.remove("visible");
+        resultEl.innerHTML = "";
+      }
+
+      // Phase transitions + agent panel → the live log
+      const phase = `${data.status}/${data.ui_phase || "-"}`;
+      if (phase !== lastPhase) {
+        lastPhase = phase;
+        appendLog(`» ${phaseLabel(data)} (frame ${data.frame_count ?? 0})`);
+      }
+      if (data.agent_panel_text) appendLog(data.agent_panel_text);
+
+      // Remote frontends pull the frame from Storage; local ones use the file timer.
+      if (!IS_LOCAL) refreshRemoteCamera(data);
+
+      if (["complete", "timeout", "error"].includes(data.status)) {
+        setStatus(`Scan finished (${data.status}).`);
+        showResult(data);
+      } else {
+        setStatus(liveStatusMessage(data));
+      }
+    }
+
+    function parseMineralsInput(text) {
+      return text.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
     }
 
     startBtn.addEventListener("click", async () => {
-      const target = mineralEl.value.trim();
-      if (!target) return alert("Enter a target mineral");
+      const minerals = parseMineralsInput(mineralEl.value);
+      if (!minerals.length) return alert("Enter a target mineral");
 
       startBtn.disabled = true;
-      resultEl.classList.remove("visible");
-      resultEl.innerHTML = "";
-      lastPreviewObjectId = null;
-      cameraPanel.innerHTML = '<div id="cameraPlaceholder">Latest snapshot will appear here.</div>';
-      setAgentText("Starting scan…");
       setStatus("Starting scan…");
-
       try {
         const resp = await fetch(`${API_BASE}/fn/scan-start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target_mineral: target }),
+          body: JSON.stringify({ target_minerals: minerals }),
         });
         const body = await resp.json();
         if (!resp.ok) throw new Error(body.error || resp.statusText);
-
-        setStatus(`Session ${body.session_id} queued — waiting for camera worker…`);
-        pollTimer = setInterval(() => pollStatus(body.session_id), 1500);
-        pollStatus(body.session_id);
+        setStatus(`Scan started (${minerals.join(", ")}) — waiting for camera worker…`);
+        poll(); // pick it up immediately
       } catch (err) {
-        startBtn.disabled = false;
         setStatus(`Error: ${err.message}`);
+      } finally {
+        setTimeout(() => { startBtn.disabled = false; }, 1500);
       }
     });
+
+    // --- always-on: live camera + auto-following scan log ---
+    if (IS_LOCAL) startLocalCamera(); // local: refresh captures/latest.jpg directly
+    setInterval(poll, 1500);          // follow the latest scan (also drives remote camera)
+    poll();
   </script>
 </body>
 </html>

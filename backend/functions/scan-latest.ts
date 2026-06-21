@@ -1,8 +1,6 @@
-// NOTE: This function intentionally does NOT mint storage download URLs.
-// Doing so (3 fetches per poll) made scan-status take 8-27s and overload the
-// gateway. The camera panel reads the local captures/latest.jpg file instead,
-// so the image URLs aren't needed. The object_id columns are still returned for
-// any caller that wants to mint a URL on demand.
+// Returns the most recent (non-abandoned) scan session so the frontend can
+// auto-follow whatever scan is currently active — no session_id needed. Same
+// field shape as scan-status (minus the per-id lookup). Fast SELECT only.
 export default async function handler(req: Request, ctx: any): Promise<Response> {
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -20,25 +18,20 @@ export default async function handler(req: Request, ctx: any): Promise<Response>
     });
   }
 
-  const url = new URL(req.url);
-  const sessionId = url.searchParams.get("session_id");
-  if (!sessionId) {
-    return new Response(JSON.stringify({ error: "session_id query param required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json", ...cors },
-    });
-  }
-
-  const result = await ctx.db.query(`SELECT * FROM scan_sessions WHERE id = $1`, [sessionId]);
+  const result = await ctx.db.query(
+    `SELECT * FROM scan_sessions
+     WHERE status <> 'abandoned'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  );
   if (!result.rows.length) {
-    return new Response(JSON.stringify({ error: "Session not found" }), {
-      status: 404,
+    return new Response(JSON.stringify({ session_id: null }), {
+      status: 200,
       headers: { "Content-Type": "application/json", ...cors },
     });
   }
 
   const row = result.rows[0];
-
   let rankedRocks = [];
   try {
     rankedRocks = JSON.parse(row.ranked_rocks_json || "[]");

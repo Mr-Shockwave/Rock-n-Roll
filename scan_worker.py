@@ -96,7 +96,9 @@ def _post_frame(
 
 
 def _claim_session() -> dict | None:
-    resp = requests.post(fn_url("scan-claim"), headers=_auth_headers(), json={}, timeout=30)
+    # Butterbase functions can cold-start slowly (several seconds); give the
+    # claim poll generous headroom so a cold start doesn't surface as a timeout.
+    resp = requests.post(fn_url("scan-claim"), headers=_auth_headers(), json={}, timeout=60)
     resp.raise_for_status()
     body = resp.json()
     return body.get("session")
@@ -268,12 +270,19 @@ def run_session(session: dict) -> None:
 
 def main() -> None:
     print(f"[worker] polling {get_api_base()}/fn/scan-claim …")
+    print("[worker] idle — click 'Start scan' in the UI to begin.")
+    idle_ticks = 0
     while True:
         try:
             session = _claim_session()
             if session:
+                idle_ticks = 0
                 run_session(session)
+                print("[worker] idle — waiting for the next scan…")
             else:
+                idle_ticks += 1
+                if idle_ticks % 15 == 0:  # heartbeat every ~15s so it's clearly alive
+                    print("[worker] still idle — no scan started yet…")
                 time.sleep(1.0)
         except KeyboardInterrupt:
             print("\n[worker] stopped")
